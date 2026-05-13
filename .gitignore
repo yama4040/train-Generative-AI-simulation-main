@@ -1,0 +1,28 @@
+# Python
+venv/
+/.venv/
+/env/
+/train-generative-sim/
+/.venvs/
+/.venv_name
+.env
+__pycache__/
+*.pyc
+*.pdf
+*.csv
+.pytest_cache/
+backend/logs/
+/backend/data/route_designs.json
+
+# Node
+node_modules/
+/frontend/node_modules/
+/frontend/dist/
+/.tools/
+
+# IDE
+.vscode/
+.DS_Store
+
+# build
+dist/

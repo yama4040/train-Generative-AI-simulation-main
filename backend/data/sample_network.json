@@ -1,0 +1,44 @@
+{
+  "stations": [
+    { "id": "S1", "name": "A Terminal", "kind": "station", "x": 100, "y": 220, "stop_time": 0 },
+    { "id": "S2", "name": "Shared West", "kind": "waypoint", "x": 330, "y": 220, "stop_time": 0 },
+    { "id": "S3", "name": "Shared East", "kind": "waypoint", "x": 570, "y": 220, "stop_time": 0 },
+    { "id": "S4", "name": "B Terminal", "kind": "station", "x": 800, "y": 120, "stop_time": 0 },
+    { "id": "S5", "name": "C Terminal", "kind": "station", "x": 800, "y": 320, "stop_time": 0 }
+  ],
+  "segments": [
+    { "id": "E1", "start": "S1", "end": "S2", "length": 230, "bidirectional": true },
+    { "id": "E2", "start": "S2", "end": "S3", "length": 240, "bidirectional": true },
+    { "id": "E3", "start": "S3", "end": "S4", "length": 260, "bidirectional": true },
+    { "id": "E4", "start": "S3", "end": "S5", "length": 260, "bidirectional": true }
+  ],
+  "routes": [
+    {
+      "id": "R_A",
+      "name": "Route A",
+      "legs": [
+        { "segment_id": "E1", "from": "S1", "to": "S2" },
+        { "segment_id": "E2", "from": "S2", "to": "S3" },
+        { "segment_id": "E3", "from": "S3", "to": "S4" }
+      ]
+    },
+    {
+      "id": "R_B",
+      "name": "Route B",
+      "legs": [
+        { "segment_id": "E4", "from": "S5", "to": "S3" },
+        { "segment_id": "E2", "from": "S3", "to": "S2" },
+        { "segment_id": "E1", "from": "S2", "to": "S1" }
+      ]
+    }
+  ],
+  "exclusive_sections": [
+    {
+      "id": "X_SHARED",
+      "name": "Shared single-track section",
+      "segment_ids": ["E2"],
+      "capacity": 1,
+      "priority_route_ids": ["R_A", "R_B"]
+    }
+  ]
+}
