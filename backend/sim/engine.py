@@ -1407,88 +1407,100 @@ def run_simulation_iter(
                     if travel > safe_dist + 1e-9:
                         travel, new_speed = apply_stop_pattern(safe_dist)
                     reached_target = False
-            # === ここから追加: 物理演算と惰行を考慮した高精度モードのロジック ===
             # === ここから修正: 物理演算と惰行を考慮した高精度モードのロジック ===
             elif simulation_mode == "high_precision":
                 current_leg = tr.current_leg()
                 if current_leg is None:
                     travel, new_speed = 0.0, 0.0
+                    tr.run_status = "STOPPED"
                 else:
-                    current_seg = segments[current_leg.segment_id]
+                    # 【修正】物理セグメントIDを抽出して属性を取得する
+                    raw_seg_id = current_leg.segment_id.split(':')[-1]
+                    current_seg = segments.get(raw_seg_id)
                     
-                    # 現在の区間の制限速度（未設定の場合は列車の最高速度）
-                    current_limit = getattr(current_seg, 'speed_limit', 0.0)
-                    if current_limit <= 0:
-                        current_limit = tr.max_speed
+                    # 現在の区間の制限速度を取得（未設定なら列車の最高速度）
+                    seg_limit = getattr(current_seg, 'speed_limit', 0.0) if current_seg else 0.0
+                    current_limit = seg_limit if seg_limit > 0 else tr.max_speed
                     current_limit = min(current_limit, tr.max_speed)
                     
-                    # 制限速度目標までの距離を取得 (インライン走査)
-                    limit_dist = float('inf')
-                    limit_speed = 0.0
-                    accum_dist = getattr(current_seg, 'length', 0.0) - tr.pos_in_leg
-                    for i in range(tr.leg_index + 1, len(tr.route.legs)):
-                        next_leg = tr.route.legs[i]
-                        next_seg = segments[next_leg.segment_id]
-                        seg_limit = getattr(next_seg, 'speed_limit', 0.0)
-                        if seg_limit > 0 and seg_limit < tr.speed:
-                            limit_dist = accum_dist
-                            limit_speed = seg_limit
-                            break
-                        accum_dist += getattr(next_seg, 'length', 0.0)
+                    # 停止位置・前方制限速度までの距離を取得
+                    limit_dist, limit_speed = _next_speed_limit_target(tr, segments)
                     
-                    # ブレーキ開始距離の計算（安全マージン込み）
+                    # 減速開始距離の計算 (余裕を持たせるためのマージンを追加)
                     margin = (tr.speed / 3.6) * dt
                     req_stop_dist = _braking_distance(tr.speed, tr.decel, dt, 0.0) + margin
-                    req_limit_dist = _braking_distance(tr.speed, tr.decel, dt, limit_speed) + margin
+                    req_limit_dist = 0.0
+                    if limit_speed > 0 and limit_speed < tr.speed:
+                        req_limit_dist = _braking_distance(tr.speed, tr.decel, dt, limit_speed) + margin
                     
-                    # ステータス判定 (力行, 惰行, 制動)
-                    calc_status = "POWER_RUN"
+                    # === 修正後：ヒステリシス（遊び）を設けた状態判定 ===
                     if stop_distance <= req_stop_dist:
                         calc_status = "BRAKE"
                     elif limit_dist <= req_limit_dist:
                         calc_status = "BRAKE"
-                    elif tr.speed >= current_limit:
-                        calc_status = "COASTING"
-                    
-                    # --- 物理演算の直接計算 ---
-                    train_weight = getattr(tr, 'weight', 30.0)
-                    
-                    # 1. 走行抵抗の算出
-                    if train_weight <= 0:
-                        run_resist = 0.0
                     else:
-                        run_resist = ((2.089 + 0.0394 * tr.speed + 0.000675 * tr.speed**2) / train_weight) * 150.0
+                        # 前回（1ステップ前）のステータスを取得
+                        prev_status = getattr(tr, 'run_status', "STOPPED")
+                        
+                        if prev_status == "COAST":
+                            # 現在が惰行中の場合、制限速度より 10.0 km/h 落ちるまでは惰行を維持する
+                            if tr.speed < current_limit - 10.0:
+                                calc_status = "ACCELE"
+                            else:
+                                calc_status = "COAST"
+                        else:
+                            # 現在が加速中（または停止等）の場合、制限速度に達したら惰行に切り替える
+                            if tr.speed >= current_limit:
+                                calc_status = "COAST"
+                            else:
+                                calc_status = "ACCELE"
+                    # === 修正ここまで ===
                     
-                    # 2. 路線抵抗（勾配・曲線）の算出
-                    gradient = getattr(current_seg, 'gradient', 0.0)
-                    curve_radius = getattr(current_seg, 'curve_radius', 0.0)
+                    
+                    # 物理パラメータの取得
+                    train_weight = getattr(tr, 'weight', 30.0)
+                    inertia = getattr(tr, 'factor_of_inertia', 1.1)
+                    gradient = getattr(current_seg, 'gradient', 0.0) if current_seg else 0.0
+                    curve_radius = getattr(current_seg, 'curve_radius', 0.0) if current_seg else 0.0
+                    
+                    # 各種抵抗の算出
+                    run_resist = 0.0
+                    if train_weight > 0:
+                        run_resist = ((2.089 + 0.0394 * tr.speed + 0.000675 * tr.speed**2) / train_weight) * 150.0
                     route_resist = gradient + (800.0 / curve_radius if curve_radius > 0 else 0.0)
                     
-                    # 3. 引張力の算出
+                    # 引張力の算出
                     tractive_effort = 0.0
-                    if calc_status == "POWER_RUN" and train_weight > 0:
+                    if calc_status == "ACCELE" and train_weight > 0:
                         if tr.speed <= 50:
                             tractive_effort = 374752.0 / 9.8 / train_weight
                         else:
                             tractive_effort = (76.513 * tr.speed**2.0 - 16401.0 * tr.speed + 949827.0) / 9.8 / train_weight
-                    
-                    # 単位変換係数: kgf/t を km/h/s の加速度に変換
-                    KGF_T_TO_KMHS = 0.03528
-                    inertia = getattr(tr, 'factor_of_inertia', 1.1)
+                            
+                    KGF_T_TO_KMHS = 0.03528 # kgf/t -> km/h/s 変換係数
                     
                     # 加速度の決定
                     if calc_status == "BRAKE":
                         acceleration = -tr.decel
-                    else:
+                    elif calc_status == "ACCELE":
                         acceleration = ((tractive_effort - route_resist - run_resist) * KGF_T_TO_KMHS) / inertia
+                        # 【追加・安全装置】計算上の加速度が異常値にならないようキャップする
+                        acceleration = min(acceleration, tr.accel)
+                    elif calc_status == "COAST":
+                        acceleration = ((0.0 - route_resist - run_resist) * KGF_T_TO_KMHS) / inertia
                     
-                    # 速度制限超過時のフェイルセーフ
-                    if calc_status == "COASTING" and tr.speed > current_limit + 2.0:
+                    # フェイルセーフ: 惰行中に下り坂等で制限速度を2km/h以上超過した場合は強制ブレーキ
+                    if calc_status == "COAST" and tr.speed > current_limit + 2.0:
                         calc_status = "BRAKE"
                         acceleration = -tr.decel
                     
-                    # 速度と移動距離の更新
+                    # 速度の更新
                     new_speed = tr.speed + (acceleration * dt)
+                    
+                    # 加速時に制限速度を飛び越えないようキャップ（頭打ち）
+                    if calc_status == "ACCELE" and new_speed > current_limit:
+                        new_speed = current_limit
+                        
                     new_speed = max(0.0, new_speed)
                     travel = ((tr.speed + new_speed) / 2.0 / 3.6) * dt
                     
@@ -1498,19 +1510,12 @@ def run_simulation_iter(
                         travel = stop_distance
                         new_speed = 0.0
                         reached_target_local = True
+                        calc_status = "STOPPED"
                     reached_target = reached_target_local
+                    
+                    # UI表示用ステータスの保存
+                    tr.run_status = calc_status
             # === 追加ここまで ===
-            else:
-                travel, new_speed = apply_stop_pattern(stop_distance)
-                
-                # === ここから追加: 高精度モード以外での表示用ステータス判定 ===
-                if new_speed > prev_speed + 1e-4:
-                    tr.run_status = "ACCELE"
-                elif new_speed < prev_speed - 1e-4:
-                    tr.run_status = "BRAKE"
-                else:
-                    tr.run_status = "COAST"
-                # === 追加ここまで ===
                 
                 
 
@@ -1650,22 +1655,25 @@ def _next_speed_limit_target(tr, segments) -> tuple[float, float]:
         return float('inf'), 0.0
         
     accum_dist = 0.0
-    current_leg = tr.route.legs[tr.leg_index]
-    current_seg = segments[current_leg.segment_id]
     
-    # 現在のセグメントの残り距離
-    accum_dist += getattr(current_seg, 'length', 0.0) - tr.pos_in_leg
+    # 【修正】現在のlegの残り距離は、RouteLeg自身の length を使う
+    current_leg = tr.route.legs[tr.leg_index]
+    accum_dist += current_leg.length - tr.pos_in_leg
 
     # 次以降のセグメントを走査
     for i in range(tr.leg_index + 1, len(tr.route.legs)):
         leg = tr.route.legs[i]
-        seg = segments[leg.segment_id]
-        limit = getattr(seg, 'speed_limit', 0.0)
         
-        # 制限速度が設定されており、かつ現在の速度より低い場合のみ対象とする
-        if limit > 0 and limit < tr.speed:
+        # 【修正】擬似セグメント(station:out:seg1等)から物理セグメントIDを抽出する
+        raw_seg_id = leg.segment_id.split(':')[-1]
+        seg = segments.get(raw_seg_id)
+        
+        limit = getattr(seg, 'speed_limit', 0.0) if seg else 0.0
+        # 制限速度が設定されている場合のみ対象とする
+        if limit > 0:
             return accum_dist, limit
             
-        accum_dist += getattr(seg, 'length', 0.0)
+        # 【修正】距離の累計にも RouteLeg自身の length を使う
+        accum_dist += leg.length
         
     return float('inf'), 0.0
