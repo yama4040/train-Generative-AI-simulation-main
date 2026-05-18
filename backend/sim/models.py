@@ -25,6 +25,9 @@ class Segment:
     start: Station
     end: Station
     length: float
+    gradient: float = 0.0      # 勾配 (‰: パーミル)
+    curve_radius: float = 0.0  # 曲線半径 (m)。0 または None の場合は直線として扱う
+    speed_limit: float = 0.0   # 制限速度 (km/h)。0 または None の場合は制限なし
 
 @dataclass
 class Train:

@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>README.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> or <div class="page"></div> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="train-generative-ai-simulation">Train Generative AI Simulation</h1>
+<p>列車運行シミュレータの PoC（FastAPI バックエンド + React フロントエンド）</p>
+<h2 id="概要">概要</h2>
+<p>このプロジェクトは、複数の列車が駅を経由して移動するシミュレーションシステムです。バックエンドは Python + FastAPI で離散時間シミュレーションエンジンを提供し、フロントエンドは React + Vite + Konva でネットワークと列車を可視化します。</p>
+<h2 id="必要なツール">必要なツール</h2>
+<p>クローン後にローカル環境で実行するために以下が必要です：</p>
+<table>
+<thead>
+<tr>
+<th>ツール</th>
+<th>バージョン</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Python</td>
+<td>3.10以上</td>
+<td>バックエンド（シミュレーション、API）</td>
+</tr>
+<tr>
+<td>Node.js</td>
+<td>18以上</td>
+<td>フロントエンド（React、Vite）</td>
+</tr>
+<tr>
+<td>npm</td>
+<td>8以上</td>
+<td>Node パッケージマネージャ</td>
+</tr>
+</tbody>
+</table>
+<p>Windows では <code>setup.bat</code> が Node.js/npm の有無を確認します。Node.js/npm が PATH に無い場合は、管理者権限なしでプロジェクト内の <code>.tools\node</code> にローカル Node.js を取得して使用します。</p>
+<h3 id="インストール確認コマンド">インストール確認コマンド</h3>
+<pre class="hljs"><code><div>python --version
+node -v
+npm -v
+</div></code></pre>
+<h2 id="環境構築手順">環境構築手順</h2>
+<h3 id="1-リポジトリのクローン">1. リポジトリのクローン</h3>
+<pre class="hljs"><code><div>git <span class="hljs-built_in">clone</span> &lt;repository-url&gt;
+<span class="hljs-built_in">cd</span> train-Generative-AI-simulation
+</div></code></pre>
+<h3 id="2-windows-の自動セットアップ">2. Windows の自動セットアップ</h3>
+<pre class="hljs"><code><div>setup.bat
+</div></code></pre>
+<p>このスクリプトは以下を実行します。</p>
+<ul>
+<li>Python 3.10 以上の確認</li>
+<li>Python 仮想環境の作成（<code>.venvs/&lt;入力した名前&gt;</code> に作成し、名前は <code>.venv_name</code> にローカル保存）</li>
+<li>バックエンド依存関係のインストール</li>
+<li>Node.js/npm の確認（未インストール時は <code>.tools\node</code> にローカル Node.js を取得）</li>
+<li>フロントエンド依存関係のインストール</li>
+</ul>
+<p>セットアップ完了後は <code>restart-servers.bat</code> を実行すると、バックエンドとフロントエンドを起動できます。</p>
+<h3 id="3-手動セットアップ">3. 手動セットアップ</h3>
+<p>以下は手動で環境を作る場合の手順です。</p>
+<h4 id="バックエンド環境構築">バックエンド環境構築</h4>
+<pre class="hljs"><code><div><span class="hljs-comment"># Python 仮想環境を作成</span>
+python -m venv venv
+
+<span class="hljs-comment"># 仮想環境を有効化</span>
+<span class="hljs-comment"># Windows の場合:</span>
+venv\Scripts\activate
+<span class="hljs-comment"># Mac/Linux の場合:</span>
+<span class="hljs-built_in">source</span> venv/bin/activate
+
+<span class="hljs-comment"># 依存パッケージをインストール</span>
+pip install -r backend/requirements.txt
+</div></code></pre>
+<p><strong>backend/requirements.txt に含まれるパッケージ：</strong></p>
+<ul>
+<li><code>fastapi</code>: Web フレームワーク</li>
+<li><code>uvicorn</code>: ASGI サーバ</li>
+<li><code>python-dotenv</code>: 環境変数管理</li>
+</ul>
+<p>テスト実行時は以下も必要：</p>
+<pre class="hljs"><code><div>pip install pytest
+</div></code></pre>
+<h4 id="フロントエンド環境構築">フロントエンド環境構築</h4>
+<pre class="hljs"><code><div><span class="hljs-built_in">cd</span> frontend
+
+<span class="hljs-comment"># npm パッケージをインストール</span>
+npm install
+</div></code></pre>
+<p><strong>frontend/package.json に含まれる主要パッケージ：</strong></p>
+<ul>
+<li><code>react</code>: UI フレームワーク</li>
+<li><code>react-konva</code>: Konva.js ラッパー（キャンバス描画）</li>
+<li><code>axios</code>: HTTP クライアント</li>
+<li><code>vitest</code>, <code>@testing-library/react</code>: テストツール（オプション）</li>
+</ul>
+<h2 id="実行手順">実行手順</h2>
+<h3 id="パターン-a-手動で各サーバを起動推奨">パターン A: 手動で各サーバを起動（推奨）</h3>
+<h4 id="ターミナル-1---バックエンド起動">ターミナル 1 - バックエンド起動</h4>
+<pre class="hljs"><code><div><span class="hljs-comment"># 仮想環境を有効化（未実行の場合）</span>
+<span class="hljs-comment"># Windows:</span>
+venv\Scripts\activate
+<span class="hljs-comment"># Mac/Linux:</span>
+<span class="hljs-built_in">source</span> venv/bin/activate
+
+<span class="hljs-comment"># バックエンドサーバを起動（ポート 8000）</span>
+uvicorn backend.main:app --reload --port 8000
+</div></code></pre>
+<p>ログに以下が表示されれば成功：</p>
+<pre class="hljs"><code><div>Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+</div></code></pre>
+<h4 id="ターミナル-2---フロントエンド起動">ターミナル 2 - フロントエンド起動</h4>
+<pre class="hljs"><code><div><span class="hljs-built_in">cd</span> frontend
+
+<span class="hljs-comment"># フロントエンド開発サーバを起動（ポート 5173）</span>
+npm run dev
+</div></code></pre>
+<p>ログに以下が表示されれば成功：</p>
+<pre class="hljs"><code><div>VITE v5.0.0  ready in 500 ms
+
+➜  Local:   http://localhost:5173/
+</div></code></pre>
+<h4 id="ターミナル-3---ブラウザで確認">ターミナル 3 - ブラウザで確認</h4>
+<pre class="hljs"><code><div>http://localhost:5173
+</div></code></pre>
+<p>ブラウザを開くと、ネットワークと列車の可視化画面が表示されます。</p>
+<h3 id="パターン-b-バッチ--スクリプトで両サーバを自動起動windows">パターン B: バッチ / スクリプトで両サーバを自動起動（Windows）</h3>
+<p>Windows ユーザの場合、以下のバッチファイルで両サーバを同時に起動できます：</p>
+<pre class="hljs"><code><div>start.bat
+</div></code></pre>
+<p>このスクリプトは以下を実行します：</p>
+<ol>
+<li>既存のバックエンド / フロントエンドプロセスを停止</li>
+<li>仮想環境や <code>node_modules</code> がなければ作成 / インストール</li>
+<li>バックエンドサーバ（ポート 8000）を起動</li>
+<li>フロントエンド開発サーバ（ポート 5173）を起動</li>
+<li><code>http://localhost:5173</code> をデフォルトブラウザで開く</li>
+</ol>
+<h2 id="api-とサーバポート">API とサーバポート</h2>
+<table>
+<thead>
+<tr>
+<th>エンドポイント</th>
+<th>ポート</th>
+<th>説明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET /api/network</code></td>
+<td>8000</td>
+<td>駅と線路のネットワーク情報を取得</td>
+</tr>
+<tr>
+<td><code>POST /api/simulate</code></td>
+<td>8000</td>
+<td>CSV シミュレーション実行（ストリーミング）</td>
+</tr>
+<tr>
+<td><code>WebSocket /ws/sim</code></td>
+<td>8000</td>
+<td>リアルタイムシミュレーション結果をストリーミング</td>
+</tr>
+<tr>
+<td>Frontend（React Vite）</td>
+<td>5173</td>
+<td>UI（ネットワーク表示、列車エディタ）</td>
+</tr>
+</tbody>
+</table>
+<h2 id="テスト実行">テスト実行</h2>
+<h3 id="バックエンド-テストpytest">バックエンド テスト（pytest）</h3>
+<pre class="hljs"><code><div><span class="hljs-comment"># 仮想環境を有効化</span>
+<span class="hljs-comment"># Windows:</span>
+venv\Scripts\activate
+<span class="hljs-comment"># Mac/Linux:</span>
+<span class="hljs-built_in">source</span> venv/bin/activate
+
+<span class="hljs-comment"># テストを実行</span>
+pytest backend/tests -v
+</div></code></pre>
+<p><strong>テスト項目：</strong></p>
+<ul>
+<li><code>test_engine.py</code>: シミュレーションエンジンの動作確認</li>
+<li><code>test_multitrain.py</code>: 複数列車シミュレーションの確認</li>
+</ul>
+<h3 id="フロントエンド-テストvitest">フロントエンド テスト（Vitest）</h3>
+<pre class="hljs"><code><div><span class="hljs-built_in">cd</span> frontend
+
+<span class="hljs-comment"># テストを実行</span>
+npm <span class="hljs-built_in">test</span>
+</div></code></pre>
+<p><strong>テスト項目：</strong></p>
+<ul>
+<li><code>TrainEditor.test.jsx</code>: プリセット保存/読み込みの確認</li>
+</ul>
+<h2 id="プロジェクト構成">プロジェクト構成</h2>
+<pre class="hljs"><code><div>train-Generative-AI-simulation/
+├── README.md                    # このファイル
+├── start.bat                    # Windows ワンクリック起動（オプション）
+├── backend/
+│   ├── main.py                  # FastAPI アプリケーション
+│   ├── requirements.txt          # Python 依存パッケージ
+│   ├── sim/
+│   │   ├── engine.py            # シミュレーションエンジン
+│   │   └── models.py            # データモデル（駅、線路、列車）
+│   ├── data/
+│   │   ├── sample_network.json  # サンプルネットワーク定義
+│   │   └── sample_trains.csv    # サンプル列車データ
+│   └── tests/
+│       ├── test_engine.py       # エンジンテスト
+│       └── test_multitrain.py   # 複数列車テスト
+├── frontend/
+│   ├── package.json             # npm 依存パッケージ
+│   ├── src/
+│   │   ├── App.jsx              # メインアプリケーション
+│   │   ├── Canvas.jsx           # Konva キャンバス描画
+│   │   ├── TrainEditor.jsx      # 列車エディタ（プリセット機能付き）
+│   │   ├── main.jsx             # エントリポイント
+│   │   └── __tests__/
+│   │       └── TrainEditor.test.jsx  # UI テスト
+│   └── vitest.config.js         # Vitest 設定
+└── venv/                        # Python 仮想環境（初回作成後）
+</div></code></pre>
+<h2 id="主な機能">主な機能</h2>
+<ul>
+<li><strong>ネットワーク表示</strong>: 駅、線路、共有単線区間をキャンバスに描画</li>
+<li><strong>route ベースの経路設計</strong>: 列車は駅列ではなく <code>route_id</code> で走行経路を選択</li>
+<li><strong>排他区間制御</strong>: 共有区間では gate 手前停止、待機理由出力、優先順によるデッドロック解消を実施</li>
+<li><strong>シミュレーション実行</strong>: 列車の加速・減速・移動をシミュレート</li>
+<li><strong>リアルタイム配信</strong>: WebSocket でシミュレーション結果をストリーミング</li>
+<li><strong>列車エディタ</strong>: 列車パラメータ（速度、加速度）を編集</li>
+<li><strong>プリセット機能</strong>: 列車構成を localStorage に保存・読み込み</li>
+<li><strong>CSV エクスポート</strong>: シミュレーション結果を CSV ファイルとして出力</li>
+</ul>
+<h2 id="トラブルシューティング">トラブルシューティング</h2>
+<h3 id="q1-modulenotfounderror-no-module-named-backend">Q1: <code>ModuleNotFoundError: No module named 'backend'</code></h3>
+<p><strong>原因</strong>: バックエンドの仮想環境が有効になっていない</p>
+<p><strong>解決策</strong>:</p>
+<pre class="hljs"><code><div><span class="hljs-comment"># Windows:</span>
+venv\Scripts\activate
+<span class="hljs-comment"># Mac/Linux:</span>
+<span class="hljs-built_in">source</span> venv/bin/activate
+</div></code></pre>
+<h3 id="q2-フロントエンドが-httplocalhost5173-に表示されない">Q2: フロントエンドが <code>http://localhost:5173</code> に表示されない</h3>
+<p><strong>原因</strong>: 依存パッケージが未インストール</p>
+<p><strong>解決策</strong>:</p>
+<pre class="hljs"><code><div><span class="hljs-built_in">cd</span> frontend
+npm install
+npm run dev
+</div></code></pre>
+<h3 id="q3-websocket-接続に失敗する">Q3: WebSocket 接続に失敗する</h3>
+<p><strong>原因</strong>: バックエンドサーバが起動していない</p>
+<p><strong>解決策</strong>: ターミナルでバックエンド起動コマンドを実行</p>
+<pre class="hljs"><code><div>uvicorn backend.main:app --reload --port 8000
+</div></code></pre>
+<h3 id="q4-setupbat-実行時に-npm-が見つからない">Q4: <code>setup.bat</code> 実行時に <code>npm</code> が見つからない</h3>
+<p><strong>原因</strong>: Node.js/npm がインストールされていない、または PATH に登録されていない。</p>
+<p><strong>確認された事象（2026-05-08）</strong>: この環境では Python 3.11.9 は使用できましたが、<code>node</code> と <code>npm</code> が見つかりませんでした。旧 <code>setup.bat</code> は <code>npm install</code> の失敗を検知せずに「セットアップ完了」と表示していました。</p>
+<p><strong>対応策</strong>: 更新後の <code>setup.bat</code> は Node.js/npm が無い場合、プロジェクト内の <code>.tools\node</code> にローカル Node.js を取得してから <code>npm install</code> を実行します。自動取得に失敗する場合は、Node.js 18 以上を手動でインストールしてから <code>setup.bat</code> を再実行してください。</p>
+<h2 id="開発メモ">開発メモ</h2>
+<ul>
+<li>バックエンド: Python 3.10、FastAPI、uvicorn で実行</li>
+<li>フロントエンド: React 18、Vite 5、Konva 8 で実行</li>
+<li>テスト: pytest（バックエンド）、Vitest（フロントエンド）</li>
+<li>CI: GitHub Actions（今後追加予定）</li>
+</ul>
+<h2 id="ライセンスと貢献">ライセンスと貢献</h2>
+<p>詳細はプロジェクト管理者に確認してください。</p>
+<h2 id="参考リンク">参考リンク</h2>
+<ul>
+<li><a href="https://fastapi.tiangolo.com/">FastAPI ドキュメント</a></li>
+<li><a href="https://reactjs.org/">React ドキュメント</a></li>
+<li><a href="https://vitejs.dev/">Vite ドキュメント</a></li>
+<li><a href="https://konvajs.org/">Konva.js ドキュメント</a></li>
+</ul>
+
+</body>
+</html>

@@ -86,6 +86,8 @@ def _normalize_vehicle_params(raw: Any) -> Dict[str, float]:
     minimums = {
         "max_speed": 1e-6,
         "length": 1e-6,
+        "weight": 1e-6,               # 追加
+        "factor_of_inertia": 1.0,     # 追加 (1.0未満にはならない)
         "accel": 1e-6,
         "decel": 1e-6,
         "low_precision_accel": 1e-6,
@@ -179,6 +181,30 @@ def _validate_network(raw_network: Any) -> Tuple[Dict[str, Any], set]:
             "end": end,
             "bidirectional": bool(seg.get("bidirectional", True))
         }
+        
+        # --- 以下を追加 ---
+        # 勾配 (gradient)
+        if "gradient" in seg and seg["gradient"] is not None:
+            try:
+                segment_obj["gradient"] = float(seg["gradient"])
+            except (TypeError, ValueError):
+                raise ValueError(f"segment {seg_id} の gradient は数値である必要があります")
+
+        # 曲線半径 (curve_radius)
+        if "curve_radius" in seg and seg["curve_radius"] is not None:
+            try:
+                segment_obj["curve_radius"] = float(seg["curve_radius"])
+            except (TypeError, ValueError):
+                raise ValueError(f"segment {seg_id} の curve_radius は数値である必要があります")
+
+        # 制限速度 (speed_limit)
+        if "speed_limit" in seg and seg["speed_limit"] is not None:
+            try:
+                segment_obj["speed_limit"] = float(seg["speed_limit"])
+            except (TypeError, ValueError):
+                raise ValueError(f"segment {seg_id} の speed_limit は数値である必要があります")
+        # --- ここまで追加 ---
+        
         if "length" in seg and seg["length"] is not None:
             try:
                 seg_length = float(seg["length"])

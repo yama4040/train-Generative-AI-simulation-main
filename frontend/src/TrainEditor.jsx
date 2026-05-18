@@ -27,6 +27,10 @@ export default function TrainEditor({
   const defaultTrainLength = Number.isFinite(vehicleParams.length) && vehicleParams.length > 0 ? vehicleParams.length : 200;
   const defaultAccel = Number.isFinite(vehicleParams.accel) && vehicleParams.accel > 0 ? vehicleParams.accel : 3.2;
   const defaultDecel = Number.isFinite(vehicleParams.decel) && vehicleParams.decel > 0 ? vehicleParams.decel : 4.0;
+  // --- 以下2行を追加 ---
+  const defaultWeight = Number.isFinite(vehicleParams.weight) && vehicleParams.weight > 0 ? vehicleParams.weight : 30.0;
+  const defaultFactorOfInertia = Number.isFinite(vehicleParams.factor_of_inertia) && vehicleParams.factor_of_inertia >= 1.0 ? vehicleParams.factor_of_inertia : 1.1;
+  // -------------------
   const lowPrecisionAccel = Number.isFinite(vehicleParams.low_precision_accel) && vehicleParams.low_precision_accel > 0 ? vehicleParams.low_precision_accel : 3.0;
   const lowPrecisionDecel = Number.isFinite(vehicleParams.low_precision_decel) && vehicleParams.low_precision_decel > 0 ? vehicleParams.low_precision_decel : 4.0;
   const [presetName, setPresetName] = useState('');
@@ -61,6 +65,8 @@ export default function TrainEditor({
         accel: defaultAccel,
         decel: defaultDecel,
         length: defaultTrainLength,
+        weight: defaultWeight,
+        factor_of_inertia: defaultFactorOfInertia,
         start_time: 0
       }
     ]);
@@ -90,6 +96,8 @@ export default function TrainEditor({
       accel: Number.isFinite(t.accel) ? t.accel : defaultAccel,
       decel: Number.isFinite(t.decel) ? t.decel : defaultDecel,
       length: Number.isFinite(t.length) && t.length > 0 ? t.length : defaultTrainLength,
+      weight: Number.isFinite(t.weight) && t.weight > 0 ? t.weight : defaultWeight,
+      factor_of_inertia: Number.isFinite(t.factor_of_inertia) && t.factor_of_inertia >= 1.0 ? t.factor_of_inertia : defaultFactorOfInertia,
       start_time: Number.isFinite(t.start_time) && t.start_time >= 0 ? t.start_time : 0
     }));
     setTrains(nextTrains);
@@ -201,6 +209,14 @@ export default function TrainEditor({
           <label>
             列車長さ(m):{' '}
             <input type="number" value={t.length ?? defaultTrainLength} onChange={(e) => update(i, 'length', parseFloat(e.target.value))} />
+          </label>
+          <label>
+            車両重量(t):{' '}
+            <input type="number" value={t.weight ?? defaultWeight} onChange={(e) => update(i, 'weight', parseFloat(e.target.value))} />
+          </label>
+          <label>
+            慣性係数:{' '}
+            <input type="number" value={t.factor_of_inertia ?? defaultFactorOfInertia} onChange={(e) => update(i, 'factor_of_inertia', parseFloat(e.target.value))} />
           </label>
           <label>
             加速度(km/h/s):{' '}

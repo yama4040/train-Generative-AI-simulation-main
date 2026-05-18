@@ -18,6 +18,8 @@ from .models import Segment, Station
 DEFAULT_VEHICLE_PARAMS = {
     "max_speed": 60.0,
     "length": 200.0,
+    "weight": 150.0,              # 追加: 車両重量 (トン)
+    "factor_of_inertia": 1.1,     # 追加: 慣性係数 (一般的に1.05〜1.1程度)
     "accel": 3.0,
     "decel": 4.0,
     "low_precision_accel": 3.0,
@@ -90,6 +92,8 @@ class RuntimeTrain:
     route_id: str
     route: RoutePlan
     length: float
+    weight: float               # 追加
+    factor_of_inertia: float    # 追加
     max_speed: float
     accel: float
     decel: float
@@ -109,6 +113,7 @@ class RuntimeTrain:
     waiting_since: Optional[float] = None
     crashed: bool = False
     active: bool = True
+    run_status: str = "STOPPED"  # <--- この行を追加
 
     def current_leg(self) -> Optional[RouteLeg]:
         if self.finished or self.leg_index >= len(self.route.legs):
@@ -182,7 +187,17 @@ def _build_network(network: Dict[str, Any]):
         end = stations[seg["end"]]
         length = _segment_length(seg, start, end)
         seg_id = seg["id"]
-        segments[seg_id] = Segment(id=seg_id, start=start, end=end, length=length)
+        #segments[seg_id] = Segment(id=seg_id, start=start, end=end, length=length)
+        # 追加: プロパティの取得
+        gradient = _as_float(seg.get("gradient"), 0.0)
+        curve_radius = _as_float(seg.get("curve_radius"), 0.0)
+        speed_limit = _as_float(seg.get("speed_limit"), 0.0)
+
+        # 修正: Segment初期化に引数を追加
+        segments[seg_id] = Segment(
+            id=seg_id, start=start, end=end, length=length,
+            gradient=gradient, curve_radius=curve_radius, speed_limit=speed_limit
+        )
         segment_raw[seg_id] = seg
 
     sections: Dict[str, ExclusiveSection] = {}
@@ -470,7 +485,9 @@ def _state_for_train(time: float, tr: RuntimeTrain) -> Dict[str, Any]:
     elif tr.stop_remaining > 0 or tr.speed <= 1e-6:
         status = "STOPPED"
     else:
-        status = "RUNNING"
+        #status = "RUNNING"
+        status = getattr(tr, 'run_status', "RUNNING")
+        
     return {
         "time": round(time, 3),
         "train_id": tr.id,
@@ -1112,7 +1129,7 @@ def run_simulation_iter(
     output_interval: float | None = None,
     vehicle_params: Dict[str, Any] | None = None,
 ):
-    stations, _segments, routes, sections = _build_network(network)
+    stations, segments, routes, sections = _build_network(network)
     devices_by_route = _build_interlocking_devices(network, routes, sections)
     if dt <= 0:
         dt = 0.5
@@ -1123,6 +1140,10 @@ def run_simulation_iter(
     headway_target_opt_min = max(0.0, _as_float(headway_target_opt_min, 10.0))
     default_max_speed = _vehicle_param(vehicle_params, "max_speed", DEFAULT_VEHICLE_PARAMS["max_speed"], 1e-6)
     default_length = _vehicle_param(vehicle_params, "length", DEFAULT_VEHICLE_PARAMS["length"], 1e-6)
+    # --- 以下を追加 ---
+    default_weight = _vehicle_param(vehicle_params, "weight", DEFAULT_VEHICLE_PARAMS["weight"], 1e-6)
+    default_factor_of_inertia = _vehicle_param(vehicle_params, "factor_of_inertia", DEFAULT_VEHICLE_PARAMS["factor_of_inertia"], 1.0)
+    # --- ここまで ---
     default_accel = _vehicle_param(vehicle_params, "accel", DEFAULT_VEHICLE_PARAMS["accel"], 1e-6)
     default_decel = _vehicle_param(vehicle_params, "decel", DEFAULT_VEHICLE_PARAMS["decel"], 1e-6)
     low_precision_accel = _vehicle_param(vehicle_params, "low_precision_accel", DEFAULT_VEHICLE_PARAMS["low_precision_accel"], 1e-6)
@@ -1149,6 +1170,10 @@ def run_simulation_iter(
             route_id=route_id,
             route=routes[route_id],
             length=_vehicle_param(cfg, "length", default_length, 1e-6),
+            # --- 以下を追加 ---
+            weight=_vehicle_param(cfg, "weight", default_weight, 1e-6),
+            factor_of_inertia=_vehicle_param(cfg, "factor_of_inertia", default_factor_of_inertia, 1.0),
+            # --- ここまで ---
             max_speed=_vehicle_param(cfg, "max_speed", default_max_speed, 1e-6),
             accel=accel,
             decel=decel,
@@ -1382,8 +1407,112 @@ def run_simulation_iter(
                     if travel > safe_dist + 1e-9:
                         travel, new_speed = apply_stop_pattern(safe_dist)
                     reached_target = False
+            # === ここから追加: 物理演算と惰行を考慮した高精度モードのロジック ===
+            # === ここから修正: 物理演算と惰行を考慮した高精度モードのロジック ===
+            elif simulation_mode == "high_precision":
+                current_leg = tr.current_leg()
+                if current_leg is None:
+                    travel, new_speed = 0.0, 0.0
+                else:
+                    current_seg = segments[current_leg.segment_id]
+                    
+                    # 現在の区間の制限速度（未設定の場合は列車の最高速度）
+                    current_limit = getattr(current_seg, 'speed_limit', 0.0)
+                    if current_limit <= 0:
+                        current_limit = tr.max_speed
+                    current_limit = min(current_limit, tr.max_speed)
+                    
+                    # 制限速度目標までの距離を取得 (インライン走査)
+                    limit_dist = float('inf')
+                    limit_speed = 0.0
+                    accum_dist = getattr(current_seg, 'length', 0.0) - tr.pos_in_leg
+                    for i in range(tr.leg_index + 1, len(tr.route.legs)):
+                        next_leg = tr.route.legs[i]
+                        next_seg = segments[next_leg.segment_id]
+                        seg_limit = getattr(next_seg, 'speed_limit', 0.0)
+                        if seg_limit > 0 and seg_limit < tr.speed:
+                            limit_dist = accum_dist
+                            limit_speed = seg_limit
+                            break
+                        accum_dist += getattr(next_seg, 'length', 0.0)
+                    
+                    # ブレーキ開始距離の計算（安全マージン込み）
+                    margin = (tr.speed / 3.6) * dt
+                    req_stop_dist = _braking_distance(tr.speed, tr.decel, dt, 0.0) + margin
+                    req_limit_dist = _braking_distance(tr.speed, tr.decel, dt, limit_speed) + margin
+                    
+                    # ステータス判定 (力行, 惰行, 制動)
+                    calc_status = "POWER_RUN"
+                    if stop_distance <= req_stop_dist:
+                        calc_status = "BRAKE"
+                    elif limit_dist <= req_limit_dist:
+                        calc_status = "BRAKE"
+                    elif tr.speed >= current_limit:
+                        calc_status = "COASTING"
+                    
+                    # --- 物理演算の直接計算 ---
+                    train_weight = getattr(tr, 'weight', 30.0)
+                    
+                    # 1. 走行抵抗の算出
+                    if train_weight <= 0:
+                        run_resist = 0.0
+                    else:
+                        run_resist = ((2.089 + 0.0394 * tr.speed + 0.000675 * tr.speed**2) / train_weight) * 150.0
+                    
+                    # 2. 路線抵抗（勾配・曲線）の算出
+                    gradient = getattr(current_seg, 'gradient', 0.0)
+                    curve_radius = getattr(current_seg, 'curve_radius', 0.0)
+                    route_resist = gradient + (800.0 / curve_radius if curve_radius > 0 else 0.0)
+                    
+                    # 3. 引張力の算出
+                    tractive_effort = 0.0
+                    if calc_status == "POWER_RUN" and train_weight > 0:
+                        if tr.speed <= 50:
+                            tractive_effort = 374752.0 / 9.8 / train_weight
+                        else:
+                            tractive_effort = (76.513 * tr.speed**2.0 - 16401.0 * tr.speed + 949827.0) / 9.8 / train_weight
+                    
+                    # 単位変換係数: kgf/t を km/h/s の加速度に変換
+                    KGF_T_TO_KMHS = 0.03528
+                    inertia = getattr(tr, 'factor_of_inertia', 1.1)
+                    
+                    # 加速度の決定
+                    if calc_status == "BRAKE":
+                        acceleration = -tr.decel
+                    else:
+                        acceleration = ((tractive_effort - route_resist - run_resist) * KGF_T_TO_KMHS) / inertia
+                    
+                    # 速度制限超過時のフェイルセーフ
+                    if calc_status == "COASTING" and tr.speed > current_limit + 2.0:
+                        calc_status = "BRAKE"
+                        acceleration = -tr.decel
+                    
+                    # 速度と移動距離の更新
+                    new_speed = tr.speed + (acceleration * dt)
+                    new_speed = max(0.0, new_speed)
+                    travel = ((tr.speed + new_speed) / 2.0 / 3.6) * dt
+                    
+                    # 停止位置の行き過ぎ防止
+                    reached_target_local = False
+                    if travel >= stop_distance - 1e-6:
+                        travel = stop_distance
+                        new_speed = 0.0
+                        reached_target_local = True
+                    reached_target = reached_target_local
+            # === 追加ここまで ===
             else:
                 travel, new_speed = apply_stop_pattern(stop_distance)
+                
+                # === ここから追加: 高精度モード以外での表示用ステータス判定 ===
+                if new_speed > prev_speed + 1e-4:
+                    tr.run_status = "ACCELE"
+                elif new_speed < prev_speed - 1e-4:
+                    tr.run_status = "BRAKE"
+                else:
+                    tr.run_status = "COAST"
+                # === 追加ここまで ===
+                
+                
 
             free_speed = min(tr.max_speed, prev_speed + accel_limit * dt)
             if selected_control_reason and (new_speed < free_speed - 1e-6 or reached_target):
@@ -1466,3 +1595,77 @@ def run_simulation(
         output_interval=output_interval,
         vehicle_params=vehicle_params,
     ))
+
+
+import math
+from typing import Dict, Tuple, Any, List
+
+def _get_run_resistance(velocity_kmh: float, weight: float) -> float:
+    if weight <= 0:
+        return 0.0
+    v = velocity_kmh
+    return ((2.089 + 0.0394 * v + 0.000675 * v**2) / weight) * 150.0
+
+def _calc_resistance(gradient: float, curve_radius: float) -> float:
+    grade_resistance = gradient
+    curve_resistance = 800.0 / curve_radius if curve_radius > 0 else 0.0
+    return grade_resistance + curve_resistance
+
+def _calc_tractive_effort(velocity_kmh: float, weight: float) -> float:
+    if weight <= 0:
+        return 0.0
+    v = velocity_kmh
+    if v <= 50:
+        result = 374752.0
+    else:
+        result = 76.513 * v**2.0 - 16401.0 * v + 949827.0
+    return result / 9.8 / weight
+"""
+def _braking_distance(v0_kmh: float, target_v_kmh: float, decel_kmh_s: float, dt: float) -> float:
+    if v0_kmh <= target_v_kmh or decel_kmh_s <= 0 or dt <= 0:
+        return 0.0
+    v0_ms = v0_kmh / 3.6
+    vt_ms = target_v_kmh / 3.6
+    decel_ms2 = decel_kmh_s / 3.6
+    dist = (v0_ms**2 - vt_ms**2) / (2 * decel_ms2)
+    return max(0.0, dist)
+"""
+
+def _braking_distance(v0_kmh: float, decel_kmh_s: float, dt: float, target_v_kmh: float = 0.0) -> float:
+    """Return discrete braking distance in meters."""
+    if v0_kmh <= target_v_kmh or decel_kmh_s <= 0 or dt <= 0:
+        return 0.0
+    step = decel_kmh_s * dt
+    dist = 0.0
+    v = v0_kmh
+    while v > target_v_kmh:
+        v_next = max(target_v_kmh, v - step)
+        dist += ((v + v_next) / 2.0 / 3.6) * dt
+        v = v_next
+    return dist
+
+def _next_speed_limit_target(tr, segments) -> tuple[float, float]:
+    """前方にある「現在速度より低い制限速度」までの距離とその制限速度を返す"""
+    if tr.leg_index >= len(tr.route.legs):
+        return float('inf'), 0.0
+        
+    accum_dist = 0.0
+    current_leg = tr.route.legs[tr.leg_index]
+    current_seg = segments[current_leg.segment_id]
+    
+    # 現在のセグメントの残り距離
+    accum_dist += getattr(current_seg, 'length', 0.0) - tr.pos_in_leg
+
+    # 次以降のセグメントを走査
+    for i in range(tr.leg_index + 1, len(tr.route.legs)):
+        leg = tr.route.legs[i]
+        seg = segments[leg.segment_id]
+        limit = getattr(seg, 'speed_limit', 0.0)
+        
+        # 制限速度が設定されており、かつ現在の速度より低い場合のみ対象とする
+        if limit > 0 and limit < tr.speed:
+            return accum_dist, limit
+            
+        accum_dist += getattr(seg, 'length', 0.0)
+        
+    return float('inf'), 0.0

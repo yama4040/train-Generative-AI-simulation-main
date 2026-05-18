@@ -10,6 +10,8 @@ const NETWORK_STORAGE_KEY = 'route_network_v2';
 const DEFAULT_VEHICLE_PARAMS = {
   max_speed: 60,
   length: 200,
+  weight: 30.0,             // 追加: 既定の車両重量(t)
+  factor_of_inertia: 1.1,   // 追加: 既定の慣性係数
   accel: 3.2,
   decel: 4.0,
   low_precision_accel: 3.0,
@@ -23,6 +25,8 @@ const DEFAULT_VEHICLE_PARAMS = {
 const VEHICLE_PARAM_FIELDS = [
   { key: 'max_speed', label: '既定最大速度', unit: 'km/h', min: 0.1, step: 0.1 },
   { key: 'length', label: '既定列車長', unit: 'm', min: 0.1, step: 0.1 },
+  { key: 'weight', label: '既定車両重量', unit: 't', min: 0.1, step: 0.1 },
+  { key: 'factor_of_inertia', label: '既定慣性係数', unit: '', min: 1.0, step: 0.1 },
   { key: 'accel', label: '既定加速度', unit: 'km/h/s', min: 0.1, step: 0.1 },
   { key: 'decel', label: '既定減速度', unit: 'km/h/s', min: 0.1, step: 0.1 },
   { key: 'low_precision_accel', label: '低精度モード加速度', unit: 'km/h/s', min: 0.1, step: 0.1 },
@@ -1029,6 +1033,24 @@ export default function App() {
     });
   };
 
+  //関数追加
+  const updateSegmentProperty = (segmentId, key, rawValue) => {
+    setNetworkSafely({
+      ...network,
+      segments: segments.map((segment) => {
+        if (segment.id !== segmentId) return segment;
+        const value = Number.isFinite(rawValue) ? rawValue : undefined;
+        const next = { ...segment };
+        if (value !== undefined) {
+          next[key] = value;
+        } else {
+          delete next[key];
+        }
+        return next;
+      })
+    });
+  };
+
   const deleteSegmentFromRoute = (segmentId) => {
     const removedSegments = new Set([segmentId]);
     const nextRoutes = routes.filter((route) => !routeUsesAnySegment(route, removedSegments));
@@ -1795,7 +1817,17 @@ export default function App() {
                   <div className="route-table-title">線路</div>
                   <table className="log-table">
                     <thead>
-                      <tr><th>ID</th><th>開始地点</th><th>終了地点</th><th>長さ(m)</th><th>走行時分(秒)</th><th></th></tr>
+                      <tr>
+                        <th>ID</th>
+                        <th>開始地点</th>
+                        <th>終了地点</th>
+                        <th>長さ(m)</th>
+                        <th>勾配(‰)</th>
+                        <th>曲線半径(m)</th>
+                        <th>制限速度(km/h)</th>
+                        <th>走行時分(秒)</th>
+                        <th></th>
+                      </tr>
                     </thead>
                     <tbody>
                       {segments.map((segment) => {
@@ -1805,7 +1837,20 @@ export default function App() {
                             <td>{segment.id}</td>
                             <td>{stationLabel(segment.start)}</td>
                             <td>{stationLabel(segment.end)}</td>
-                            <td><input type="number" value={Number.isFinite(lengthValue) ? lengthValue : ''} onChange={(e) => updateSegmentLength(segment.id, parseFloat(e.target.value))} style={{ width: 80 }} /></td>
+                            <td>
+                              <input type="number" value={Number.isFinite(lengthValue) ? lengthValue : ''} onChange={(e) => updateSegmentLength(segment.id, parseFloat(e.target.value))} style={{ width: 80 }} />
+                            </td>
+                            {/* --- ここから追加 --- */}
+                            <td>
+                              <input type="number" value={Number.isFinite(segment.gradient) ? segment.gradient : ''} onChange={(e) => updateSegmentProperty(segment.id, 'gradient', parseFloat(e.target.value))} style={{ width: 60 }} />
+                            </td>
+                            <td>
+                              <input type="number" value={Number.isFinite(segment.curve_radius) ? segment.curve_radius : ''} onChange={(e) => updateSegmentProperty(segment.id, 'curve_radius', parseFloat(e.target.value))} style={{ width: 60 }} />
+                            </td>
+                            <td>
+                              <input type="number" value={Number.isFinite(segment.speed_limit) ? segment.speed_limit : ''} onChange={(e) => updateSegmentProperty(segment.id, 'speed_limit', parseFloat(e.target.value))} style={{ width: 60 }} />
+                            </td>
+                            {/* --- ここまで追加 --- */}
                             <td>{Number.isFinite(segment.travel_time) ? segment.travel_time : '-'}</td>
                             <td><button onClick={() => deleteSegmentFromRoute(segment.id)}>削除</button></td>
                           </tr>
