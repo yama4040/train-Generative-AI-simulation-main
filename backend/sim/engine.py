@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import math
 
 from .models import Segment, Station
+from .llm_data_logger import LLMDataCollector # 追加
 
 
 DEFAULT_VEHICLE_PARAMS = {
@@ -1210,6 +1211,11 @@ def run_simulation_iter(
     max_steps = None
     if duration is not None:
         max_steps = int(max(1, math.ceil(duration / dt)))
+    
+    # --- 以下を追加 ---
+    data_collector = LLMDataCollector("dqn_training_data.csv") # 追加: 初期化
+    llm_eval_interval = 30 # 例: 30ステップごとにLLMを呼び出す
+    # ここまで ---
 
     last_accel_sign = [0] * len(trains)
     last_sign_change = [0.0] * len(trains)
@@ -1246,10 +1252,18 @@ def run_simulation_iter(
             if tr.finished:
                 continue
 
+            # === ここから改修 ===
             if tr.stop_remaining > 0:
+                prev_stop_remaining = tr.stop_remaining
                 tr.stop_remaining = max(0.0, tr.stop_remaining - dt)
+                
+                # 【追加】停車時間がちょうどゼロになった瞬間（＝駅出発時刻）を記録
+                if prev_stop_remaining > 0 and tr.stop_remaining == 0.0:
+                    tr.last_station_departure_time = time
+                
                 tr.speed = 0.0
                 continue
+            # === ここまで改修 ===
 
             leg = tr.current_leg()
             if leg is None:
@@ -1408,7 +1422,7 @@ def run_simulation_iter(
                         travel, new_speed = apply_stop_pattern(safe_dist)
                     reached_target = False
             # === ここから修正: 物理演算と惰行を考慮した高精度モードのロジック ===
-            elif simulation_mode == "high_precision":
+            elif simulation_mode in ("high_precision", "high_precision_llm"):
                 current_leg = tr.current_leg()
                 if current_leg is None:
                     travel, new_speed = 0.0, 0.0
@@ -1547,6 +1561,21 @@ def run_simulation_iter(
                 _move_along_route(tr, travel)
 
         _mark_crashes(trains, sections)
+        
+        # === ここから追加: LLMデータ収集の呼び出し ===
+        # === 修正後 ===
+        # 高精度+LLMモードのときのみ、指定ステップごとにデータを収集
+        if simulation_mode == "high_precision_llm" and step % llm_eval_interval == 0:
+            for tr in trains:
+                if tr.active and not tr.finished and not tr.crashed:
+                    data_collector.process_and_save(
+                        tr=tr,
+                        segments=segments,
+                        time=time,
+                        nominal_times=nominal_times[tr.index],
+                        actual_arrivals=actual_arrivals[tr.index]
+                    )
+        # === ここまで追加 ===
 
         all_finished = all(tr.finished or tr.crashed for tr in trains)
         should_emit = time + 1e-9 >= next_emit or all_finished
