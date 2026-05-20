@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 import math
+from datetime import datetime # ▼▼▼ この1行を追加 ▼▼▼
 
 from .models import Segment, Station
 from .llm_data_logger import LLMDataCollector # 追加
@@ -1213,7 +1214,12 @@ def run_simulation_iter(
         max_steps = int(max(1, math.ceil(duration / dt)))
     
     # --- 以下を追加 ---
-    data_collector = LLMDataCollector("dqn_training_data.csv") # 追加: 初期化
+    #data_collector = LLMDataCollector("dqn_training_data.csv") # 追加: 初期化
+    # ▼▼▼ 修正後：日時を含めたファイル名を生成する ▼▼▼
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_filename = f"dqn_training_data_{timestamp}.csv"
+    data_collector = LLMDataCollector(csv_filename)
+    # ▲▲▲ 修正ここまで ▲▲▲
     llm_eval_interval = 30 # 例: 30ステップごとにLLMを呼び出す
     # ここまで ---
 
