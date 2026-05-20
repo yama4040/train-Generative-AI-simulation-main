@@ -1463,8 +1463,8 @@ def run_simulation_iter(
                         prev_status = getattr(tr, 'run_status', "STOPPED")
                         
                         if prev_status == "COAST":
-                            # 現在が惰行中の場合、制限速度より 10.0 km/h 落ちるまでは惰行を維持する
-                            if tr.speed < current_limit - 10.0:
+                            # 現在が惰行中の場合、制限速度より 15.0 km/h 落ちるまでは惰行を維持する
+                            if tr.speed < current_limit - 15.0:
                                 calc_status = "ACCELE"
                             else:
                                 calc_status = "COAST"
