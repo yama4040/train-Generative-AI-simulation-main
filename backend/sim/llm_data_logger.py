@@ -125,11 +125,23 @@ class LLMDataCollector:
         
         # 6. フェーズの判定
         phase = self._determine_phase(tr, time, dist_to_next_station, limit_dist, limit_speed)
+        
+        # 6. フェーズの判定の下あたりに、現在の運転状態（ノッチ）を取得・翻訳する処理を追加
+        raw_status = getattr(tr, 'run_status', '')
+        if raw_status == "POWER_RUN" or raw_status == "ACCELE":
+            current_notch = "力行（加速）中"
+        elif raw_status == "BRAKE":
+            current_notch = "ブレーキ（減速）中"
+        elif raw_status == "COAST" or raw_status == "COASTING":
+            current_notch = "惰行中"
+        else:
+            current_notch = "停止・その他"
 
         return {
             "time": time,
             "train_id": tr.id,
             "phase": phase,
+            "current_notch": current_notch, # ←★これを追加
             "speed_limit": current_limit,
             "current_speed": tr.speed,
             "dist_to_next_station": dist_to_next_station,
@@ -215,6 +227,7 @@ $$reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$$
         current_status = f"""
 # 現在の走行状況
 - 走行フェーズ: {features['phase']}
+- 現在の運転操作: {features['current_notch']}  # ←★これを追加
 - 速度情報: 制限速度 {features['speed_limit']} km/h に対し、現在 {features['current_speed']:.1f} km/h で走行中
 - 次駅までの距離: {features['dist_to_next_station']:.1f} m
 - 運行状況: 計画ダイヤに対し {features['delay']} 秒の遅延
