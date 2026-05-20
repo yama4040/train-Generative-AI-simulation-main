@@ -1562,20 +1562,38 @@ def run_simulation_iter(
 
         _mark_crashes(trains, sections)
         
-        # === ここから追加: LLMデータ収集の呼び出し ===
-        # === 修正後 ===
-        # 高精度+LLMモードのときのみ、指定ステップごとにデータを収集
+       # === 追加: LLMデータ収集の呼び出し ===
         if simulation_mode == "high_precision_llm" and step % llm_eval_interval == 0:
+            
+            # フロントエンドに推論開始を知らせる
+            yield {"type": "llm_status", "status": "thinking"}
+
+            all_success = True
+            called_any = False
+            
             for tr in trains:
                 if tr.active and not tr.finished and not tr.crashed:
-                    data_collector.process_and_save(
+                    # process_and_save の戻り値(True/False)を受け取る
+                    success = data_collector.process_and_save(
                         tr=tr,
                         segments=segments,
                         time=time,
                         nominal_times=nominal_times[tr.index],
                         actual_arrivals=actual_arrivals[tr.index]
                     )
-        # === ここまで追加 ===
+                    # 1つでもエラーがあれば全体をエラー扱いにする
+                    if success is False:
+                        all_success = False
+                    called_any = True
+            
+            # フロントエンドに結果を知らせる
+            if called_any:
+                if all_success:
+                    yield {"type": "llm_status", "status": "success"}
+                else:
+                    yield {"type": "llm_status", "status": "error"}
+            else:
+                yield {"type": "llm_status", "status": "idle"}
 
         all_finished = all(tr.finished or tr.crashed for tr in trains)
         should_emit = time + 1e-9 >= next_emit or all_finished

@@ -1,19 +1,24 @@
 import os
 import json
 import csv
-from typing import Dict, Any
-from typing import Tuple
+from typing import Dict, Any, Tuple
 from openai import OpenAI
 
-def call_llm_for_weights(prompt_text: str) -> Tuple[float, float, float]:
+# ▼▼▼ ここから2行追加 ▼▼▼
+
+from dotenv import load_dotenv
+load_dotenv() 
+# ▲▲▲ ここまで ▲▲▲
+
+def call_llm_for_weights(prompt_text: str) -> Tuple[str, float, float, float]:
     # ターミナル（環境変数）からURLとAPIキーを取得
     api_key = os.getenv("LLM_API_KEY")
     base_url = os.getenv("LLM_API_URL")
 
     # 設定されていない場合はダミーの値を返してシミュレーションを継続
     if not api_key or not base_url:
-        print("【警告】LLM_API_KEY または LLM_API_URL が設定されていません。ダミーの重み(1.0)を使用します。")
-        return 1.0, 1.0, 1.0
+        print("【警告】LLM_API_KEY または LLM_API_URL が設定されていません。ダミーの重みを使用します。")
+        return "APIキー未設定によるダミー", 1.0, 1.0, 1.0
 
     try:
         # OpenAI互換クライアントの初期化
@@ -27,7 +32,7 @@ def call_llm_for_weights(prompt_text: str) -> Tuple[float, float, float]:
             messages=[
                 {
                     "role": "system", 
-                    "content": "あなたは列車の自動運転制御を評価するエキスパートです。必ず指示されたJSONフォーマットのみを出力してください。余計な解説は不要です。"
+                    "content": "あなたは列車の自動運転制御を評価するエキスパートです。必ず指示されたJSONフォーマットのみを出力してください。JSON以外のテキスト（マークダウンの装飾や挨拶など）は絶対に含めないでください。"
                 },
                 {"role": "user", "content": prompt_text}
             ],
@@ -40,36 +45,43 @@ def call_llm_for_weights(prompt_text: str) -> Tuple[float, float, float]:
         clean_text = result_text.strip().replace("```json", "").replace("```", "")
         weights = json.loads(clean_text)
 
+        # 理由と重みを抽出
+        reason = weights.get("reason", "理由の出力なし")
         w_surv = float(weights.get("w_surv", 1.0))
         w_conf = float(weights.get("w_conf", 1.0))
         w_comp = float(weights.get("w_comp", 1.0))
 
-        return w_surv, w_conf, w_comp
+        return reason, w_surv, w_conf, w_comp
 
     except Exception as e:
         print(f"【LLMエラー】重みの取得に失敗しました: {e}")
         # APIエラー時もシミュレータが止まらないようフォールバック
-        return 1.0, 1.0, 1.0
+        return f"エラー発生: {e}", 1.0, 1.0, 1.0
+
 
 class LLMDataCollector:
-    def __init__(self, output_csv: str = "dqn_training_data.csv"):
-        self.output_csv = output_csv
+    def __init__(self, output_filename: str = "dqn_training_data.csv"):
+        # backend/logs フォルダ内に保存するようにパスを変更
+        base_dir = os.path.dirname(os.path.dirname(__file__)) # backendフォルダ
+        log_dir = os.path.join(base_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        
+        self.output_csv = os.path.join(log_dir, output_filename)
+        
+        # CSVのヘッダーに 'reason' を追加
         self.headers = [
             "time", "train_id", "phase", "speed_limit", "current_speed",
             "dist_to_next_station", "delay", "current_gradient", 
             "next_limit_info", "next_gradient_info",
-            "w_surv", "w_conf", "w_comp"
+            "w_surv", "w_conf", "w_comp", "reason"
         ]
         
-        # ファイルが存在しなければヘッダーを作成
         if not os.path.exists(self.output_csv):
-            with open(self.output_csv, mode='w', newline='', encoding='utf-8') as f:
+            with open(self.output_csv, mode='w', newline='', encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
                 writer.writerow(self.headers)
 
     def extract_features(self, tr, segments, time: float, nominal_times: list, actual_arrivals: dict) -> Dict[str, Any]:
-        """シミュレータの状態からLLMに渡す情報を抽出する"""
-        
         # 1. 次の駅までの距離を計算
         dist_to_next_station = 0.0
         found_station = False
@@ -79,14 +91,14 @@ class LLMDataCollector:
             dist_to_next_station += max(0.0, current_leg.length - tr.pos_in_leg)
             for i in range(tr.leg_index + 1, len(tr.route.legs)):
                 leg = tr.route.legs[i]
-                if leg.stop_station_id is not None: # 次の停車駅
+                if leg.stop_station_id is not None:
                     found_station = True
                     break
                 dist_to_next_station += leg.length
         if not found_station:
-            dist_to_next_station = 9999.0 # 終点等の場合
+            dist_to_next_station = 9999.0
             
-        # 2. 現在の物理セグメント情報（制限速度、勾配）
+        # 2. 現在の物理セグメント情報
         raw_seg_id = current_leg.segment_id.split(':')[-1] if current_leg else ""
         current_seg = segments.get(raw_seg_id)
         current_limit = getattr(current_seg, 'speed_limit', 0.0) if current_seg else 0.0
@@ -102,16 +114,14 @@ class LLMDataCollector:
             
         # 4. 先の勾配情報
         grad_dist, grad_val = self._next_gradient_target(tr, segments)
-        if grad_dist <= 2000 and grad_val != 0: # 2km以内を探索
+        if grad_dist <= 2000 and grad_val != 0:
             direction = "上り" if grad_val > 0 else "下り"
             next_gradient_info = f"{int(grad_dist)}m先に{direction}勾配{abs(grad_val)}‰あり"
         else:
             next_gradient_info = "この先目立った勾配なし"
 
-        # 5. 遅延の計算（前駅の出発遅延ベース）
+        # 5. 遅延の計算
         delay = 0.0
-        # ※ 実際には actual_arrivals と nominal_times を比較して算出します。
-        # ここでは簡易的に tr.waiting_since 等を使うか、外部から渡された遅延を使用
         
         # 6. フェーズの判定
         phase = self._determine_phase(tr, time, dist_to_next_station, limit_dist, limit_speed)
@@ -130,23 +140,18 @@ class LLMDataCollector:
         }
 
     def _determine_phase(self, tr, time: float, dist_to_station: float, limit_dist: float, limit_speed: float) -> str:
-        """4つの走行フェーズを判定する"""
-        # 前駅を出発してからの時間（ここではシミュレーション開始時間からの簡易判定）
-        # ※厳密には前駅出発時刻をtrオブジェクトに持たせる必要があります
-        time_since_departure = time - tr.start_time 
+        time_since_departure = time - getattr(tr, 'last_station_departure_time', 0.0)
         
         if dist_to_station <= 400.0:
             return "次駅への減速フェーズ（駅手前400m）"
         elif limit_dist <= 500.0 and limit_speed < tr.speed:
             return "制限速度接近に伴い減速中"
         elif getattr(tr, 'run_status', '') == "ACCELE" and time_since_departure <= 20.0:
-            # 実際には「前駅出発時刻」からの経過時間を条件にします
             return "駅出発直後の加速フェーズ（20秒）"
         else:
             return "巡航フェーズ（駅間走行中）"
 
     def _next_limit_target(self, tr, segments) -> Tuple[float, float]:
-        """前方にある「現在速度より低い制限速度」までの距離とその制限速度を返す"""
         if not tr.current_leg(): return float('inf'), 0.0
         accum_dist = tr.current_leg().length - tr.pos_in_leg
         for i in range(tr.leg_index + 1, len(tr.route.legs)):
@@ -160,7 +165,6 @@ class LLMDataCollector:
         return float('inf'), 0.0
 
     def _next_gradient_target(self, tr, segments) -> Tuple[float, float]:
-        """前方にある勾配変化ポイントまでの距離と勾配を返す"""
         if not tr.current_leg(): return float('inf'), 0.0
         current_raw_id = tr.current_leg().segment_id.split(':')[-1]
         current_grad = getattr(segments.get(current_raw_id), 'gradient', 0.0) if segments.get(current_raw_id) else 0.0
@@ -171,18 +175,17 @@ class LLMDataCollector:
             raw_seg_id = leg.segment_id.split(':')[-1]
             seg = segments.get(raw_seg_id)
             grad = getattr(seg, 'gradient', 0.0) if seg else 0.0
-            if grad != current_grad and abs(grad) > 0: # 勾配が変化した場所
+            if grad != current_grad and abs(grad) > 0:
                 return accum_dist, grad
             accum_dist += leg.length
         return float('inf'), 0.0
 
     def generate_prompt(self, features: Dict[str, Any]) -> str:
-        """LLMに渡すプロンプトテキストを生成"""
         return f"""あなたは次世代の鉄道自動運転AI（DQNエージェント）の挙動を最適化する「評価エキスパート」です。
 現在の列車の走行状況を分析し、エージェントが安全かつ効率的に学習するための「Tri-Drive報酬モデル」の3つの重みを決定してください。
 
 【Tri-Drive報酬モデルの定義】
-以下の3つの指標について、現在の状況下でどれを重視すべきか（0.0〜2.0の範囲）を評価してください。
+以下の3つの指標について、現在の状況下でどれを重視すべきか（0.0〜1.0の範囲）を評価してください。
 1. Survival (安全性/恒常性)
    - 制限速度の厳格な遵守や、目的地点への確実で安全な到着を評価します。
    - 重視すべき状況：制限速度に接近している時、速度超過の危険がある時、大幅な遅延を回復する必要がある時。
@@ -203,39 +206,40 @@ class LLMDataCollector:
 - 前方の勾配情報: {features['next_gradient_info']}
 
 【推論と出力の指示】
-上記の「現在の走行状況」を論理的に解釈し、フェーズや潜在的リスク（急勾配、速度制限の接近など）に最も適した重み（w_surv, w_conf, w_comp）を決定してください。
-出力は必ず以下のJSONフォーマットのみとし、理由などのテキストは一切含めないでください。
+上記の「現在の走行状況」を論理的に解釈し、フェーズや潜在的リスク（急勾配、速度制限の接近など）に最も適した重み（w_surv, w_conf, w_comp）と、
+その重みとした評価理由（reason）を決定してください。
+出力は必ず以下のJSONフォーマットのみとし、理由などのテキストをJSONの外に一切含めないでください。
 
 {{
-  "w_surv": 1.2,
+  "reason": "制限速度に接近しており、かつ下り勾配であるため、速度超過リスクが高い状況です。そのためSurvivalを最も高く設定し、
+            次いで回生ブレーキを活用できる状況であるためCompetenceをやや高めに設定します。",
+  "w_surv": 1.0,
   "w_conf": 0.8,
-  "w_comp": 1.0
+  "w_comp": 0.9
 }}
 """
 
     def process_and_save(self, tr, segments, time: float, nominal_times: list, actual_arrivals: dict):
-        """シミュレータから呼び出され、LLM推論とCSV保存を行う"""
-        # 駅停車中(STOPPED)ならスキップ
         if getattr(tr, 'run_status', '') == "STOPPED" or tr.speed < 1e-3:
             return
 
-        # 1. 状態の特徴量抽出
         features = self.extract_features(tr, segments, time, nominal_times, actual_arrivals)
-        
-        # 2. プロンプト生成
         prompt = self.generate_prompt(features)
         
-        # 3. LLM API呼び出し (ダミー)
-        w_surv, w_conf, w_comp = call_llm_for_weights(prompt)
+        reason, w_surv, w_conf, w_comp = call_llm_for_weights(prompt)
         
-        # 4. CSVへ書き込み
         row = [
             round(time, 1), tr.id, features["phase"], features["speed_limit"], 
             round(features["current_speed"], 2), round(features["dist_to_next_station"], 1), 
             features["delay"], features["current_gradient"], features["next_limit_info"], 
-            features["next_gradient_info"], w_surv, w_conf, w_comp
+            features["next_gradient_info"], w_surv, w_conf, w_comp, reason
         ]
         
-        with open(self.output_csv, mode='a', newline='', encoding='utf-8') as f:
+        with open(self.output_csv, mode='a', newline='', encoding='utf-8-sig') as f:
             writer = csv.writer(f)
             writer.writerow(row)
+        
+        # ▼▼▼ 追加：エラーメッセージを含んでいれば False、それ以外は True を返す ▼▼▼
+        if reason.startswith("APIキー未設定") or reason.startswith("エラー発生"):
+            return False
+        return True

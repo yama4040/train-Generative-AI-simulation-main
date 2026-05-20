@@ -94,6 +94,10 @@ export default function App() {
   const [infoPaneHeight, setInfoPaneHeight] = useState(280);
   const [canvasSize, setCanvasSize] = useState({ width: 900, height: 420 });
 
+  // ▼▼▼ これを1行追加 ▼▼▼
+  //const [isLlmThinking, setIsLlmThinking] = useState(false);
+  const [llmStatus, setLlmStatus] = useState('idle'); // 'idle' | 'thinking' | 'success' | 'error'
+
   const bufferRef = useRef([]);
   const streamingRef = useRef(false);
   const playbackTimerRef = useRef(null);
@@ -650,6 +654,23 @@ export default function App() {
   const drainNextFrame = () => {
     const buffer = bufferRef.current;
     if (buffer.length === 0) return false;
+
+    // ▼▼▼ 修正: ステータスの受け取りとタイマー処理 ▼▼▼
+    while (buffer.length > 0 && buffer[0].type === 'llm_status') {
+      const event = buffer.shift();
+      setLlmStatus(event.status);
+      
+      // 結果表示後、2秒後に自動で消す
+      if (event.status === 'success' || event.status === 'error') {
+        setTimeout(() => {
+          setLlmStatus((prev) => (prev === event.status ? 'idle' : prev));
+        }, 2000);
+      }
+    }
+    
+    if (buffer.length === 0) return true; 
+    // ▲▲▲ 修正ここまで ▲▲▲
+
     const frameTime = buffer[0].time;
     const frameStates = [];
     while (buffer.length > 0 && buffer[0].time === frameTime) {
@@ -1752,6 +1773,37 @@ export default function App() {
                 ))}
               </div>
             )}
+
+           {/* ▼▼▼ 修正: LLMステータスバナー ▼▼▼ */}
+            {activeTab === 'simulation' && llmStatus !== 'idle' && (
+              <div style={{
+                position: 'absolute',
+                top: 16,
+                right: 16,
+                // ステータスに応じて背景色を切り替え (緑 / 赤 / 黒)
+                backgroundColor: llmStatus === 'success' ? 'rgba(40, 167, 69, 0.9)' :
+                                 llmStatus === 'error'   ? 'rgba(220, 53, 69, 0.9)' :
+                                 'rgba(0, 0, 0, 0.75)',
+                color: '#fff',
+                padding: '8px 16px',
+                borderRadius: '8px',
+                fontWeight: 'bold',
+                zIndex: 1000,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+                transition: 'background-color 0.3s ease'
+              }}>
+                {llmStatus === 'thinking' && <><span style={{ fontSize: '1.2em' }}>🧠</span> LLM推論中...</>}
+                {llmStatus === 'success'  && <><span style={{ fontSize: '1.2em' }}>✅</span> 推論成功</>}
+                {llmStatus === 'error'    && <><span style={{ fontSize: '1.2em' }}>⚠️</span> APIエラー</>}
+              </div>
+            )}
+            {/* ▲▲▲ 修正ここまで ▲▲▲ */}
+
+
+            
           </div>
         </div>
 
