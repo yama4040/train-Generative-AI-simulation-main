@@ -66,6 +66,8 @@ export default function App() {
   const [duration, setDuration] = useState(120);
   const [outputInterval, setOutputInterval] = useState(1.0);
   const [playbackSpeed, setPlaybackSpeed] = useState(10);
+  // ▼▼▼ これを1行追加 ▼▼▼
+  const [llmInterval, setLlmInterval] = useState(30);
   const [simulationMode, setSimulationMode] = useState('low_precision');
   const [idmTimeHeadway, setIdmTimeHeadway] = useState(1.5);
   const [headwayTarget, setHeadwayTarget] = useState(120);
@@ -781,6 +783,8 @@ export default function App() {
     duration,
     output_interval: outputInterval,
     simulation_mode: simulationMode,
+    // ▼▼▼ これを1行追加 ▼▼▼
+    llm_interval: llmInterval,
     idm_T: idmTimeHeadway,
     headway_target: headwayTarget,
     headway_epsilon: headwayEpsilon,
@@ -1467,6 +1471,11 @@ export default function App() {
             <label>送信/ログ間隔(秒): <input type="number" min="0.05" step="0.05" value={outputInterval} onChange={(e) => setOutputInterval(parseFloat(e.target.value))} /></label>
             <label>シミュレーション期間(秒): <input type="number" min="1" value={duration} onChange={(e) => setDuration(parseFloat(e.target.value))} /></label>
             <label>描画速度(倍): <input type="number" min="0.1" step="0.1" value={playbackSpeed} onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value) || 1)} /></label>
+            {/* ▼▼▼ ここから追加：LLM間隔設定 ▼▼▼ */}
+            {simulationMode === 'high_precision_llm' && (
+              <label>LLM呼び出し間隔(秒): <input type="number" min="1" step="1" value={llmInterval} onChange={(e) => setLlmInterval(parseInt(e.target.value) || 30)} /></label>
+            )}
+            {/* ▲▲▲ ここまで追加 ▲▲▲ */}
             {simulationMode === 'follow_idm' && (
               <label>IDM時間ヘッドウェイ T(秒): <input type="number" min="0.1" step="0.1" value={idmTimeHeadway} onChange={(e) => setIdmTimeHeadway(parseFloat(e.target.value) || 1.5)} /></label>
             )}

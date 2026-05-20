@@ -1122,6 +1122,8 @@ def run_simulation_iter(
     dt: float = 0.5,
     duration: float | None = 60.0,
     simulation_mode: str = "low_precision",
+    # ▼▼▼ 引数に llm_interval を追加 ▼▼▼
+    llm_interval: float = 30.0,
     idm_T: float = 1.5,
     headway_target: float = 120.0,
     headway_k: float = 0.005,
@@ -1220,9 +1222,11 @@ def run_simulation_iter(
     csv_filename = f"dqn_training_data_{timestamp}.csv"
     data_collector = LLMDataCollector(csv_filename)
     # ▲▲▲ 修正ここまで ▲▲▲
-    llm_eval_interval = 30 # 例: 30ステップごとにLLMを呼び出す
-    # ここまで ---
-
+    #llm_eval_interval = 30 # 例: 30ステップごとにLLMを呼び出す
+    # 【修正】ハードコードされていた 30.0 を llm_interval に変更
+    llm_eval_interval = int(llm_interval / dt) 
+    if llm_eval_interval < 1:
+        llm_eval_interval = 1  # ゼロ割や無限ループ防止のセーフティ
     last_accel_sign = [0] * len(trains)
     last_sign_change = [0.0] * len(trains)
     time = 0.0
@@ -1629,6 +1633,8 @@ def run_simulation(
     dt: float = 0.5,
     duration: float | None = 60.0,
     simulation_mode: str = "low_precision",
+    # ▼▼▼ 引数を追加 ▼▼▼
+    llm_interval: float = 30.0,
     idm_T: float = 1.5,
     headway_target: float = 120.0,
     headway_k: float = 0.005,
@@ -1644,6 +1650,8 @@ def run_simulation(
         dt=dt,
         duration=duration,
         simulation_mode=simulation_mode,
+        # ▼▼▼ 内部呼び出しへ引き渡しを追加 ▼▼▼
+        llm_interval=llm_interval,
         idm_T=idm_T,
         headway_target=headway_target,
         headway_k=headway_k,
