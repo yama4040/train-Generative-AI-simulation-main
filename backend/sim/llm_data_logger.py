@@ -157,7 +157,7 @@ class LLMDataCollector:
         if dist_to_station <= 400.0:
             return "次駅への減速フェーズ（駅手前400m以内）"
         elif limit_dist <= 500.0 and limit_speed < tr.speed:
-            return "制限速度接近に伴い減速中"
+            return "制限速度接近フェーズ（500m以内に制限速度があり、かつ現在速度が制限速度を超えている）"
         elif getattr(tr, 'run_status', '') == "ACCELE" and time_since_departure <= 20.0:
             return "駅出発直後の加速フェーズ（駅発車20秒以内）"
         else:
@@ -263,10 +263,12 @@ $$reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$$
         
         reason, w_surv, w_conf, w_comp = call_llm_for_weights(prompt)
         
+        # ▼▼▼ 修正: rowリストの先頭付近に features["current_notch"] を追加 ▼▼▼
         row = [
-            round(time, 1), tr.id, features["phase"], features["speed_limit"], 
-            round(features["current_speed"], 2), round(features["dist_to_next_station"], 1), 
-            features["delay"], features["current_gradient"], features["next_limit_info"], 
+            round(time, 1), tr.id, features["phase"], features["current_notch"], 
+            features["speed_limit"], round(features["current_speed"], 2), 
+            round(features["dist_to_next_station"], 1), features["delay"], 
+            features["current_gradient"], features["next_limit_info"], 
             features["next_gradient_info"], w_surv, w_conf, w_comp, reason
         ]
         
