@@ -114,7 +114,7 @@ class LLMDataCollector:
             
         # 4. 先の勾配情報
         grad_dist, grad_val = self._next_gradient_target(tr, segments)
-        if grad_dist <= 2000 and grad_val != 0:
+        if grad_dist <= 500 and grad_val != 0:
             direction = "上り" if grad_val > 0 else "下り"
             next_gradient_info = f"{int(grad_dist)}m先に{direction}勾配{abs(grad_val)}‰あり"
         else:
