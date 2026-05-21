@@ -70,7 +70,7 @@ class LLMDataCollector:
         
         # CSVのヘッダーに 'reason' を追加
         self.headers = [
-            "time", "train_id", "phase", "speed_limit", "current_speed",
+            "time", "train_id", "phase","act", "speed_limit", "current_speed",
             "dist_to_next_station", "delay", "current_gradient", 
             "next_limit_info", "next_gradient_info",
             "w_surv", "w_conf", "w_comp", "reason"
