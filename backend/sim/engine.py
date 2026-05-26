@@ -116,6 +116,8 @@ class RuntimeTrain:
     crashed: bool = False
     active: bool = True
     run_status: str = "STOPPED"  # <--- この行を追加
+    delay: float = 0.0  # <--- この1行を追加
+    time_to_next_station: float = 0.0  # <--- 【追加】定時到着までの残り時間
 
     def current_leg(self) -> Optional[RouteLeg]:
         if self.finished or self.leg_index >= len(self.route.legs):
@@ -1187,17 +1189,69 @@ def run_simulation_iter(
             active=start_time <= EPS,
         ))
 
-    nominal_times: list[list[float]] = []
+    # === 修正: 本当の駅データ（tr.route.station_ids）に完全準拠した理想ダイヤの自動生成 ===
+    train_stop_schedules = []
     for tr in trains:
-        times = [0.0]
-        previous_distance = 0.0
-        for station_distance in tr.route.station_cumulative[1:]:
-            interval = max(0.0, station_distance - previous_distance)
-            travel = _travel_time_for_distance(interval, tr.max_speed, tr.accel, tr.decel) or 0.0
-            times.append(times[-1] + travel)
-            previous_distance = station_distance
-        nominal_times.append(times)
-    loop_nominal_times = [times[-1] if times else 0.0 for times in nominal_times]
+        schedules = []
+        for i, st_id in enumerate(tr.route.station_ids):
+            station = stations.get(st_id)
+            if station is None:
+                continue
+            
+            # 停車駅かどうかの判定 (始発駅、終着駅、または停車時間 stop_time > 0 の駅)
+            is_stop_station = (
+                i == 0 or 
+                i == len(tr.route.station_ids) - 1 or 
+                _as_float(getattr(station, "stop_time", 0.0), 0.0) > 0.0
+            )
+            
+            if is_stop_station:
+                cum_dist = tr.route.station_cumulative[i]
+                stop_time = _as_float(getattr(station, "stop_time", 0.0), 0.0)
+                schedules.append({
+                    "cum_dist": cum_dist,
+                    "station_id": st_id,
+                    "stop_time": stop_time,
+                    "expected_arrival": 0.0,
+                    "expected_departure": 0.0
+                })
+        train_stop_schedules.append(schedules)
+
+    # 各停車駅間の正確な運転時分（時刻表）を確定させる
+    for idx, tr in enumerate(trains):
+        schedules = train_stop_schedules[idx]
+        if len(schedules) < 2:
+            continue
+        
+        # 始発駅の出発予定時刻は、列車のシミュレーション開始時刻（start_time）に合わせる
+        current_time = tr.start_time
+        schedules[0]["expected_arrival"] = tr.start_time
+        schedules[0]["expected_departure"] = tr.start_time
+        
+        for i in range(1, len(schedules)):
+            # 停車駅〜停車駅までの「本当の合計距離」を正確に算出
+            dist_diff = schedules[i]["cum_dist"] - schedules[i-1]["cum_dist"]
+            # その距離を一気に最高速度で駆け抜けた場合の理想の走行時分を計算
+            travel = _travel_time_for_distance(dist_diff, tr.max_speed, tr.accel, tr.decel) or 0.0
+            
+            current_time += travel
+            schedules[i]["expected_arrival"] = current_time
+            current_time += schedules[i]["stop_time"]
+            schedules[i]["expected_departure"] = current_time
+
+    # 1周（ラップ）の理想総所要時間を算出
+    loop_nominal_times = []
+    for idx, tr in enumerate(trains):
+        schedules = train_stop_schedules[idx]
+        if tr.route.circular and schedules:
+            loop_nominal_times.append(schedules[-1]["expected_arrival"])
+        else:
+            loop_nominal_times.append(schedules[-1]["expected_departure"] if schedules else 0.0)
+            
+    # 後続の互換性のために到着時刻のリストとして nominal_times を保持
+    nominal_times = [[s["expected_arrival"] for s in sch] for sch in train_stop_schedules]
+    # ===================================================================================
+    
     actual_arrivals = [dict() for _ in trains]
     headway_target_opt = [headway_target] * len(trains)
     route_groups: Dict[str, List[int]] = {}
@@ -1573,6 +1627,62 @@ def run_simulation_iter(
                 _move_along_route(tr, travel)
 
         _mark_crashes(trains, sections)
+        
+        # === 追加: 基準ダイヤ（停車駅時刻表）との比較によるリアルタイム遅延・残り時間計算 ===
+        for idx, tr in enumerate(trains):
+            if not tr.active or tr.finished or tr.crashed:
+                continue
+                
+            schedules = train_stop_schedules[idx]
+            if len(schedules) < 2:
+                tr.delay = 0.0
+                tr.time_to_next_station = 0.0
+                continue
+                
+            lap = tr.laps_completed
+            current_pos = tr.route_position()
+            loop_time = loop_nominal_times[idx]
+            base_time = tr.start_time + lap * loop_time
+            
+            # 現在どの停車駅間にいるかを特定
+            idx_prev = 0
+            idx_next = len(schedules) - 1
+            for i in range(len(schedules) - 1):
+                if schedules[i]["cum_dist"] <= current_pos <= schedules[i+1]["cum_dist"] + 1e-6:
+                    idx_prev = i
+                    idx_next = i + 1
+                    break
+                    
+            sch_prev = schedules[idx_prev]
+            sch_next = schedules[idx_next]
+            
+            t_arrival_next = base_time + sch_next["expected_arrival"]
+            
+            # ① 駅に停車中の場合
+            if current_pos <= sch_prev["cum_dist"] + 1e-3 and getattr(tr, 'stop_remaining', 0.0) > 0:
+                t_arrival_prev = base_time + sch_prev["expected_arrival"]
+                t_departure_prev = base_time + sch_prev["expected_departure"]
+                
+                if time < t_arrival_prev:
+                    tr.delay = time - t_arrival_prev
+                elif time > t_departure_prev:
+                    tr.delay = time - t_departure_prev
+                else:
+                    tr.delay = 0.0
+                tr.time_to_next_station = max(0.0, t_arrival_next - time)
+                
+            # ② 駅間を走行中の場合（DQNの入力仕様に完全適合させる）
+            else:
+                # 定時到着までの残り時間はリアルタイムにカウントダウンする
+                tr.time_to_next_station = max(0.0, t_arrival_next - time)
+                
+                if time > t_arrival_next:
+                    # 次の駅の到着予定時刻を過ぎてしまった場合（遅刻確定）のみ遅延が発生する
+                    tr.delay = time - t_arrival_next
+                else:
+                    # 予定時刻を走行中に超えない限り、遅延情報は 0.0 として入力される
+                    tr.delay = 0.0
+        # =================================================================
         
        # === 追加: LLMデータ収集の呼び出し ===
         if simulation_mode in ("high_precision_llm", "high_precision_llm_eval") and step % llm_eval_interval == 0:

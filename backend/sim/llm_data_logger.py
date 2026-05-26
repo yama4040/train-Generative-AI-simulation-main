@@ -79,10 +79,10 @@ class LLMDataCollector:
         os.makedirs(log_dir, exist_ok=True)
         self.output_csv = os.path.join(log_dir, output_filename)
         
-        # モードに応じてCSVのヘッダーを切り替え
+        # CSVヘッダーに 'time_to_next_station' を追加
         base_headers = [
             "time", "train_id", "phase", "current_notch", "speed_limit", "current_speed",
-            "dist_to_next_station", "delay", "current_gradient", 
+            "dist_to_next_station", "time_to_next_station", "delay", "current_gradient", 
             "next_limit_info", "next_gradient_info"
         ]
         if self.llm_mode == "weights":
@@ -103,12 +103,18 @@ class LLMDataCollector:
         
         if current_leg:
             dist_to_next_station += max(0.0, current_leg.length - tr.pos_in_leg)
-            for i in range(tr.leg_index + 1, len(tr.route.legs)):
-                leg = tr.route.legs[i]
-                if leg.stop_station_id is not None:
-                    found_station = True
-                    break
-                dist_to_next_station += leg.length
+            # ▼▼▼ 修正: 現在のレグ自体が駅の停止目標（進入レグ）である場合の判定を追加 ▼▼▼
+            if current_leg.stop_station_id is not None:
+                found_station = True
+            else:
+                # 次以降のレグを走査し、進入レグの長さも距離にしっかり足し込む
+                for i in range(tr.leg_index + 1, len(tr.route.legs)):
+                    leg = tr.route.legs[i]
+                    dist_to_next_station += leg.length
+                    if leg.stop_station_id is not None:
+                        found_station = True
+                        break
+            # ▲▲▲ 修正ここまで ▲▲▲
         if not found_station:
             dist_to_next_station = 9999.0
             
@@ -131,7 +137,10 @@ class LLMDataCollector:
         else:
             next_gradient_info = "この先目立った勾配なし"
 
-        delay = 0.0
+        delay = round(getattr(tr, 'delay', 0.0), 1)
+        # ▼▼▼ この1行を追加 ▼▼▼
+        time_to_next = round(getattr(tr, 'time_to_next_station', 0.0), 1)
+        
         phase = self._determine_phase(tr, time, dist_to_next_station, limit_dist, limit_speed)
 
         raw_status = getattr(tr, 'run_status', '')
@@ -145,10 +154,17 @@ class LLMDataCollector:
             current_notch = "停止・その他"
 
         return {
-            "time": time, "train_id": tr.id, "phase": phase, "current_notch": current_notch,
-            "speed_limit": current_limit, "current_speed": tr.speed,
-            "dist_to_next_station": dist_to_next_station, "delay": delay,
-            "current_gradient": current_gradient, "next_limit_info": next_limit_info,
+            "time": time,
+            "train_id": tr.id,
+            "phase": phase,
+            "current_notch": current_notch,
+            "speed_limit": current_limit,
+            "current_speed": tr.speed,
+            "dist_to_next_station": dist_to_next_station,
+            "time_to_next_station": time_to_next, # ★追加
+            "delay": delay,
+            "current_gradient": current_gradient,
+            "next_limit_info": next_limit_info,
             "next_gradient_info": next_gradient_info
         }
 
@@ -233,30 +249,33 @@ $reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$
     def generate_eval_prompt(self, features: Dict[str, Any]) -> str:
         """② 直接評価モード用のプロンプト（新規）"""
         system_instruction = """あなたは列車の自動運転を評価する「運転監督エキスパート」です。
-現在の走行状況と直前の「運転操作（ノッチ）」，その先の線路状況（制限速度や勾配，次駅までの残り距離）を分析し、その操作が適切であったかを -1.0（極めて危険・不適切）から 1.0（極めて優秀・適切）の範囲で総合評価（reward）してください。
+現在の走行状況と直前の「運転操作（ノッチ）」，その先の線路状況（制限速度や勾配，次駅までの残り距離）を分析し、その運転操作が適切であったかを 0.0（極めて危険・不適切）から 1.0（極めて優秀・適切）の範囲で総合評価（reward）してください。
 
 #評価の観点（Tri-Drive原則）
-1. 安全性 (Survival): 制限速度を超過するような操作は重大なペナルティ（マイナス評価）。
+1. 安全性 (Survival): 制限速度を超過するような操作は重大なペナルティ。目的地点への安全な到着かつ定時運行に寄与しているか。
 2. 快適性 (Confidence): 制限速度や勾配が安定している区間で、不必要な加減速を繰り返していないか。
-3. 効率性 (Competence): 減速が必要な場面で適切にブレーキ（回生）をかけられているか、または惰行でエネルギーを節約できているか。
+3. 効率性 (Competence): 減速が必要な場面で適切にブレーキをかけられているか、または惰行でエネルギーを節約できているか。
 """
         current_status = f"""
 # 現在の走行状況と運転操作
 - 走行フェーズ: {features['phase']}
 - **現在の運転操作**: {features['current_notch']}  <-- 【重要】この操作が今の状況に合っているかを評価してください。
 - 速度情報: 制限速度 {features['speed_limit']} km/h に対し、現在 {features['current_speed']:.1f} km/h で走行中
-- 次駅までの距離: {features['dist_to_next_station']:.1f} m
+- 次駅への情報: 次駅までの残り距離{features['dist_to_next_station']:.1f} mに対し，定時到着まで残り {features['time_to_next_station']} 秒
+- 運行状況: 計画ダイヤに対し {features['delay']} 秒の遅延
 - 現在の勾配: {features['current_gradient']} ‰
 - 前方の制限情報: {features['next_limit_info']}
 - 前方の勾配情報: {features['next_gradient_info']}
 """
         output_format = """
 # 推論と出力の指示
-現在の状況に対して路線全体や，駅間の走行を考えた時に「その運転操作」が安全か、快適か、効率的かを分析してください。その後、-1.0〜1.0の数値で評価を下してください。
-理由は100文字程度で簡潔に説明してください。
+現在の状況に対して路線全体や，駅間の走行を考えた時に「その運転操作」が安全か、快適か、効率的かを分析してください。
+また，定時到着に寄与しているかについても，駅までの残り距離と定時到着までの残り時間から最適速度を算出し評価をしてください．その際，駅到着前に減速することや制限速度を超過しないといったことを考慮して最適な行動を評価してください．
+その後、0.0〜1.0の数値で評価を下してください。
+出力する数値は0.1刻みで、理由も必ず100文字程度で簡潔に説明してください。
 {
-  "reason": "制限速度に接近しており、かつ下り勾配であるにも関わらず「力行中」であるため、速度超過リスクが極めて高い危険な操作です。",
-  "reward": -0.85
+  "reason": "制限速度には余裕がありますが、巡航フェーズの平坦な区間において不必要なブレーキをかけており、乗り心地とエネルギー効率が低下しています。したがって基本点1.0から乗り心地悪化で-0.2の減点とします。",
+  "reward": 0.8
 }
 """
         return system_instruction + current_status + output_format
@@ -275,7 +294,9 @@ $reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$
             row = [
                 round(time, 1), tr.id, features["phase"], features["current_notch"], 
                 features["speed_limit"], round(features["current_speed"], 2), 
-                round(features["dist_to_next_station"], 1), features["delay"], 
+                round(features["dist_to_next_station"], 1), 
+                features["time_to_next_station"],  # <--- 【修正】ここを追加！
+                features["delay"], 
                 features["current_gradient"], features["next_limit_info"], 
                 features["next_gradient_info"], w_surv, w_conf, w_comp, reason
             ]
@@ -285,7 +306,9 @@ $reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$
             row = [
                 round(time, 1), tr.id, features["phase"], features["current_notch"], 
                 features["speed_limit"], round(features["current_speed"], 2), 
-                round(features["dist_to_next_station"], 1), features["delay"], 
+                round(features["dist_to_next_station"], 1), 
+                features["time_to_next_station"],  # <--- 【修正】ここを追加！
+                features["delay"], 
                 features["current_gradient"], features["next_limit_info"], 
                 features["next_gradient_info"], reward, reason
             ]
