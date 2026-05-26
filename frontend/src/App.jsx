@@ -1471,11 +1471,11 @@ export default function App() {
             <label>送信/ログ間隔(秒): <input type="number" min="0.05" step="0.05" value={outputInterval} onChange={(e) => setOutputInterval(parseFloat(e.target.value))} /></label>
             <label>シミュレーション期間(秒): <input type="number" min="1" value={duration} onChange={(e) => setDuration(parseFloat(e.target.value))} /></label>
             <label>描画速度(倍): <input type="number" min="0.1" step="0.1" value={playbackSpeed} onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value) || 1)} /></label>
-            {/* ▼▼▼ ここから追加：LLM間隔設定 ▼▼▼ */}
-            {simulationMode === 'high_precision_llm' && (
+            {/* ▼▼▼ 条件に || simulationMode === 'high_precision_llm_eval' を追加 ▼▼▼ */}
+            {(simulationMode === 'high_precision_llm' || simulationMode === 'high_precision_llm_eval') && (
               <label>LLM呼び出し間隔(秒): <input type="number" min="1" step="1" value={llmInterval} onChange={(e) => setLlmInterval(parseInt(e.target.value) || 30)} /></label>
             )}
-            {/* ▲▲▲ ここまで追加 ▲▲▲ */}
+            {/* ▲▲▲ 修正ここまで ▲▲▲ */}
             {simulationMode === 'follow_idm' && (
               <label>IDM時間ヘッドウェイ T(秒): <input type="number" min="0.1" step="0.1" value={idmTimeHeadway} onChange={(e) => setIdmTimeHeadway(parseFloat(e.target.value) || 1.5)} /></label>
             )}

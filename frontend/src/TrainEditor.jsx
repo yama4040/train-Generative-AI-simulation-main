@@ -137,22 +137,28 @@ export default function TrainEditor({
           />
           高精度
         </label>
-        {/* ========================================== */}
-        {/* ▼▼▼ ここから追加：高精度＋LLMモード ▼▼▼ */}
-        {/* ========================================== */}
-        <label style={{ marginRight: '16px' }}>
-          <input
-            type="radio"
-            name="simMode"
-            value="high_precision_llm"
-            checked={simulationMode === 'high_precision_llm'}
-            onChange={(e) => setSimulationMode(e.target.value)}
-          />
-          高精度＋LLM
-        </label>
-        {/* ========================================== */}
-        {/* ▲▲▲ ここまで追加 ▲▲▲ */}
-        {/* ========================================== */}
+          <label>
+            <input
+              type="radio"
+              name="simMode"
+              value="high_precision_llm"
+              checked={simulationMode === 'high_precision_llm'}
+              onChange={(e) => setSimulationMode(e.target.value)}
+            />
+            高精度＋LLM (①重み決定)
+          </label>
+          {/* ▼▼▼ 追加：直接評価モード ▼▼▼ */}
+          <label>
+            <input
+              type="radio"
+              name="simMode"
+              value="high_precision_llm_eval"
+              checked={simulationMode === 'high_precision_llm_eval'}
+              onChange={(e) => setSimulationMode(e.target.value)}
+            />
+            高精度＋LLM (②直接評価)
+          </label>
+          {/* ▲▲▲ 追加ここまで ▲▲▲ */}
         <label style={{ marginRight: '16px' }}>
           <input
             type="radio"

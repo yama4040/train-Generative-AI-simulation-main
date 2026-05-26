@@ -1215,12 +1215,14 @@ def run_simulation_iter(
     if duration is not None:
         max_steps = int(max(1, math.ceil(duration / dt)))
     
-    # --- 以下を追加 ---
-    #data_collector = LLMDataCollector("dqn_training_data.csv") # 追加: 初期化
-    # ▼▼▼ 修正後：日時を含めたファイル名を生成する ▼▼▼
+   # ▼▼▼ ここを修正：モードに応じてCSVファイル名とLLMのモードを切り替える ▼▼▼
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_filename = f"dqn_training_data_{timestamp}.csv"
-    data_collector = LLMDataCollector(csv_filename)
+    if simulation_mode == "high_precision_llm_eval":
+        csv_filename = f"llm_eval_data_{timestamp}.csv"
+        data_collector = LLMDataCollector(csv_filename, llm_mode="eval")
+    else:
+        csv_filename = f"dqn_training_data_{timestamp}.csv"
+        data_collector = LLMDataCollector(csv_filename, llm_mode="weights")
     # ▲▲▲ 修正ここまで ▲▲▲
     #llm_eval_interval = 30 # 例: 30ステップごとにLLMを呼び出す
     # 【修正】ハードコードされていた 30.0 を llm_interval に変更
@@ -1432,7 +1434,7 @@ def run_simulation_iter(
                         travel, new_speed = apply_stop_pattern(safe_dist)
                     reached_target = False
             # === ここから修正: 物理演算と惰行を考慮した高精度モードのロジック ===
-            elif simulation_mode in ("high_precision", "high_precision_llm"):
+            elif simulation_mode in ("high_precision", "high_precision_llm", "high_precision_llm_eval"):
                 current_leg = tr.current_leg()
                 if current_leg is None:
                     travel, new_speed = 0.0, 0.0
@@ -1573,7 +1575,7 @@ def run_simulation_iter(
         _mark_crashes(trains, sections)
         
        # === 追加: LLMデータ収集の呼び出し ===
-        if simulation_mode == "high_precision_llm" and step % llm_eval_interval == 0:
+        if simulation_mode in ("high_precision_llm", "high_precision_llm_eval") and step % llm_eval_interval == 0:
             
             # フロントエンドに推論開始を知らせる
             yield {"type": "llm_status", "status": "thinking"}

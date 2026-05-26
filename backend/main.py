@@ -480,6 +480,11 @@ async def simulate(request: Request):
     duration = float(payload.get("duration", 60.0))
     output_interval = payload.get("output_interval", dt)
     simulation_mode = payload.get("simulation_mode", "low_precision")
+    
+    # ▼▼▼ これを追加 ▼▼▼
+    llm_interval = float(payload.get("llm_interval", 30.0))
+    # ▲▲▲ 追加ここまで ▲▲▲
+    
     idm_T = payload.get("idm_T", 1.5)
     headway_target = payload.get("headway_target", 120.0)
     headway_k = payload.get("headway_k", 0.005)
@@ -528,6 +533,9 @@ async def simulate(request: Request):
         dt=dt,
         duration=duration,
         simulation_mode=simulation_mode,
+        # ▼▼▼ これを追加 ▼▼▼
+        llm_interval=llm_interval,
+        # ▲▲▲ 追加ここまで ▲▲▲
         idm_T=idm_T,
         headway_target=headway_target,
         headway_k=headway_k,
@@ -614,6 +622,9 @@ async def websocket_sim(ws: WebSocket):
         duration = float(params.get("duration", 60.0))
         output_interval = params.get("output_interval", dt)
         simulation_mode = params.get("simulation_mode", "low_precision")
+        # ▼▼▼ これを追加 ▼▼▼
+        llm_interval = float(params.get("llm_interval", 30.0))
+        # ▲▲▲ 追加ここまで ▲▲▲
         idm_T = params.get("idm_T", 1.5)
         headway_target = params.get("headway_target", 120.0)
         headway_k = params.get("headway_k", 0.005)
@@ -674,6 +685,9 @@ async def websocket_sim(ws: WebSocket):
             dt=dt,
             duration=duration,
             simulation_mode=simulation_mode,
+            # ▼▼▼ これを追加 ▼▼▼
+            llm_interval=llm_interval,
+            # ▲▲▲ 追加ここまで ▲▲▲
             idm_T=idm_T,
             headway_target=headway_target,
             headway_k=headway_k,
