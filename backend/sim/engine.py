@@ -18,10 +18,10 @@ from .llm_data_logger import LLMDataCollector # 追加
 
 
 DEFAULT_VEHICLE_PARAMS = {
-    "max_speed": 60.0,
-    "length": 200.0,
-    "weight": 150.0,              # 追加: 車両重量 (トン)
-    "factor_of_inertia": 1.1,     # 追加: 慣性係数 (一般的に1.05〜1.1程度)
+    "max_speed": 100.0,
+    "length": 20.0,
+    "weight": 28,              # 追加: 車両重量 (トン)
+    "factor_of_inertia": 1.0123,     # 追加: 慣性係数 (一般的に1.05〜1.1程度)
     "accel": 3.0,
     "decel": 4.0,
     "low_precision_accel": 3.0,
@@ -30,6 +30,7 @@ DEFAULT_VEHICLE_PARAMS = {
     "min_follow_speed": 20.0,
     "accel_sign_cooldown": 5.0,
     "idm_delta": 4.0,
+    "coast_reaccel_margin": 15.0,  # 追加: 惰行後、制限速度から何km/h落ちたら再加速するか
 }
 
 SAFE_GAP_M = DEFAULT_VEHICLE_PARAMS["safe_gap"]
@@ -96,6 +97,7 @@ class RuntimeTrain:
     length: float
     weight: float               # 追加
     factor_of_inertia: float    # 追加
+    coast_reaccel_margin: float    # ← 【重要】必ず speed: float = 0.0 よりも「上」に書いてください！
     max_speed: float
     accel: float
     decel: float
@@ -118,6 +120,9 @@ class RuntimeTrain:
     run_status: str = "STOPPED"  # <--- この行を追加
     delay: float = 0.0  # <--- この1行を追加
     time_to_next_station: float = 0.0  # <--- 【追加】定時到着までの残り時間
+    # ▼▼▼ 追加 ▼▼▼
+    prev_run_status: str = "STOPPED"
+    holding_time: float = 0.0
 
     def current_leg(self) -> Optional[RouteLeg]:
         if self.finished or self.leg_index >= len(self.route.legs):
@@ -1149,6 +1154,7 @@ def run_simulation_iter(
     # --- 以下を追加 ---
     default_weight = _vehicle_param(vehicle_params, "weight", DEFAULT_VEHICLE_PARAMS["weight"], 1e-6)
     default_factor_of_inertia = _vehicle_param(vehicle_params, "factor_of_inertia", DEFAULT_VEHICLE_PARAMS["factor_of_inertia"], 1.0)
+    default_coast_reaccel_margin = _vehicle_param(vehicle_params, "coast_reaccel_margin", DEFAULT_VEHICLE_PARAMS["coast_reaccel_margin"], 0.0) # 追加
     # --- ここまで ---
     default_accel = _vehicle_param(vehicle_params, "accel", DEFAULT_VEHICLE_PARAMS["accel"], 1e-6)
     default_decel = _vehicle_param(vehicle_params, "decel", DEFAULT_VEHICLE_PARAMS["decel"], 1e-6)
@@ -1179,6 +1185,7 @@ def run_simulation_iter(
             # --- 以下を追加 ---
             weight=_vehicle_param(cfg, "weight", default_weight, 1e-6),
             factor_of_inertia=_vehicle_param(cfg, "factor_of_inertia", default_factor_of_inertia, 1.0),
+            coast_reaccel_margin=_vehicle_param(cfg, "coast_reaccel_margin", default_coast_reaccel_margin, 0.0), # 追加
             # --- ここまで ---
             max_speed=_vehicle_param(cfg, "max_speed", default_max_speed, 1e-6),
             accel=accel,
@@ -1217,24 +1224,80 @@ def run_simulation_iter(
                 })
         train_stop_schedules.append(schedules)
 
-    # 各停車駅間の正確な運転時分（時刻表）を確定させる
+    # === 高度化修正: 各レグの制限速度ベースの計算 ＋ 加減速ロス ＋ 余裕時分の自動適用 ===
     for idx, tr in enumerate(trains):
         schedules = train_stop_schedules[idx]
         if len(schedules) < 2:
             continue
         
-        # 始発駅の出発予定時刻は、列車のシミュレーション開始時刻（start_time）に合わせる
         current_time = tr.start_time
         schedules[0]["expected_arrival"] = tr.start_time
         schedules[0]["expected_departure"] = tr.start_time
         
+        # 駅間の各レグを正確に追跡するためのインデックス
+        leg_idx = 0
+        
         for i in range(1, len(schedules)):
-            # 停車駅〜停車駅までの「本当の合計距離」を正確に算出
-            dist_diff = schedules[i]["cum_dist"] - schedules[i-1]["cum_dist"]
-            # その距離を一気に最高速度で駆け抜けた場合の理想の走行時分を計算
-            travel = _travel_time_for_distance(dist_diff, tr.max_speed, tr.accel, tr.decel) or 0.0
+            target_cum_dist = schedules[i]["cum_dist"]
             
-            current_time += travel
+            pure_cruise_time = 0.0
+            legs_in_interval = []
+            
+            # 1. この停車駅間（前の駅〜次の駅）に存在するレグをすべて抽出
+            while leg_idx < len(tr.route.legs):
+                leg = tr.route.legs[leg_idx]
+                legs_in_interval.append(leg)
+                leg_idx += 1
+                # 次の停車駅の累積距離に達したら、この駅間のスキャンを終了
+                if tr.route.cumulative[leg_idx] >= target_cum_dist - 1e-5:
+                    break
+            
+            # 2. 各レグの固有の制限速度をもとに、純粋な巡航時間を積算
+            for leg in legs_in_interval:
+                raw_seg_id = leg.segment_id.split(':')[-1]
+                seg = segments.get(raw_seg_id)
+                seg_limit = getattr(seg, 'speed_limit', 0.0) if seg else 0.0
+                
+                # レグの制限速度と列車の最高速度の、小さい方を適用
+                limit_kmh = min(seg_limit if seg_limit > 0 else tr.max_speed, tr.max_speed)
+                limit_ms = limit_kmh / 3.6
+                
+                if limit_ms > 0:
+                    pure_cruise_time += leg.length / limit_ms
+            
+            # 3. 加速・減速にかかるロス時間（等速で通り過ぎる場合と比べた時間の遅れ）を計算
+            # 鉄道物理学に基づき、(到達速度 / 2a) ＋ (到達速度 / 2b) で正確に算出可能
+            loss_time = 0.0
+            if legs_in_interval:
+                # 駅出発直後のレグの制限速度
+                first_seg_id = legs_in_interval[0].segment_id.split(':')[-1]
+                first_seg = segments.get(first_seg_id)
+                fl_limit = getattr(first_seg, 'speed_limit', 0.0) if first_seg else 0.0
+                v_start = min(fl_limit if fl_limit > 0 else tr.max_speed, tr.max_speed) / 3.6
+                
+                # 駅到着直前のレグの制限速度
+                last_seg_id = legs_in_interval[-1].segment_id.split(':')[-1]
+                last_seg = segments.get(last_seg_id)
+                ll_limit = getattr(last_seg, 'speed_limit', 0.0) if last_seg else 0.0
+                v_end = min(ll_limit if ll_limit > 0 else tr.max_speed, tr.max_speed) / 3.6
+                
+                accel_ms2 = tr.accel / 3.6
+                decel_ms2 = tr.decel / 3.6
+                
+                if accel_ms2 > 0:
+                    loss_time += v_start / (2.0 * accel_ms2)  # 出発加速ロス
+                if decel_ms2 > 0:
+                    loss_time += v_end / (2.0 * decel_ms2)    # 停車減速ロス
+            
+            # 4. 【余裕時分の適用】
+            # 実務に則り、基本走行時分に対して「3%〜5%のマージン率」と「一律のバッファ秒数」を上乗せ
+            margin_rate = 0.04  # 4%のランニングタイムマージン（遅延回復用バッファ）
+            fixed_buffer = 2.0  # 駅間一律で2.0秒の余裕を追加
+            
+            # 最終的な基準運転時分を確定
+            total_station_interval_time = (pure_cruise_time + loss_time) * (1.0 + margin_rate) + fixed_buffer
+            
+            current_time += total_station_interval_time
             schedules[i]["expected_arrival"] = current_time
             current_time += schedules[i]["stop_time"]
             schedules[i]["expected_departure"] = current_time
@@ -1523,8 +1586,8 @@ def run_simulation_iter(
                         prev_status = getattr(tr, 'run_status', "STOPPED")
                         
                         if prev_status == "COAST":
-                            # 現在が惰行中の場合、制限速度より 15.0 km/h 落ちるまでは惰行を維持する
-                            if tr.speed < current_limit - 15.0:
+                            # 現在が惰行中の場合、制限速度より coast_reaccel_margin km/h 落ちるまでは惰行を維持する
+                            if tr.speed < current_limit - tr.coast_reaccel_margin:
                                 calc_status = "ACCELE"
                             else:
                                 calc_status = "COAST"
@@ -1536,7 +1599,7 @@ def run_simulation_iter(
                                 calc_status = "ACCELE"
                     # === 修正ここまで ===
                     
-                    
+                    """
                     # 物理パラメータの取得
                     train_weight = getattr(tr, 'weight', 30.0)
                     inertia = getattr(tr, 'factor_of_inertia', 1.1)
@@ -1573,6 +1636,50 @@ def run_simulation_iter(
                     if calc_status == "COAST" and tr.speed > current_limit + 2.0:
                         calc_status = "BRAKE"
                         acceleration = -tr.decel
+                    """
+                   # ========================================================
+                    # 修正: DQN論文モデル＋慣性係数の欠落を修正した「完全版」物理演算
+                    # ========================================================
+                    # 単位変換定数: 1000 / (9.8 * 3.6) = 28.34467
+                    UNIT_CONVERSION = 28.34467
+                    
+                    # UIから取得した慣性係数 (例: 1.0123)
+                    factor_of_inertia = getattr(tr, 'factor_of_inertia', 1.0123)
+                    
+                    gradient = getattr(current_seg, 'gradient', 0.0) if current_seg else 0.0
+                    curve_radius = getattr(current_seg, 'curve_radius', 0.0) if current_seg else 0.0
+                    
+                    # 走行抵抗・勾配抵抗・曲線抵抗の算出 [kg/t]
+                    run_resist = 2.39 + 0.0224 * tr.speed + 0.00062 * (tr.speed**2)
+                    grade_resist = gradient
+                    curve_resist = 800.0 / curve_radius if curve_radius > 0 else 0.0
+                    total_resist = run_resist + grade_resist + curve_resist
+                    
+                    # 引張力(力行)の算出 [kg/t]
+                    tractive_effort = 0.0
+                    if calc_status == "ACCELE":
+                        if 0 <= tr.speed < 42:
+                            tractive_effort = -1.489 * tr.speed + 92.408
+                        elif 42 <= tr.speed < 68:
+                            tractive_effort = -0.4 * tr.speed + 46.68
+                        else:
+                            tractive_effort = -0.0963 * tr.speed + 26.0284
+                            
+                    # 加速度の決定 [km/h/s]
+                    if calc_status == "BRAKE":
+                        acceleration = -tr.decel  # UIで設定した 4.0 がマイナス付きで適用されます
+                    elif calc_status == "ACCELE":
+                        # 正しい物理式: (引張力 - 抵抗) / (単位変換定数 * 慣性係数)
+                        acceleration = (tractive_effort - total_resist) / (UNIT_CONVERSION * factor_of_inertia)
+                    elif calc_status == "COAST":
+                        # 惰行時は引張力0
+                        acceleration = (0.0 - total_resist) / (UNIT_CONVERSION * factor_of_inertia)
+                    
+                    # フェイルセーフ: 惰行中に下り坂等で制限速度を2km/h以上超過した場合は強制ブレーキ
+                    if calc_status == "COAST" and tr.speed > current_limit + 2.0:
+                        calc_status = "BRAKE"
+                        acceleration = -tr.decel
+                    # ========================================================
                     
                     # 速度の更新
                     new_speed = tr.speed + (acceleration * dt)
@@ -1593,8 +1700,16 @@ def run_simulation_iter(
                         calc_status = "STOPPED"
                     reached_target = reached_target_local
                     
-                    # UI表示用ステータスの保存
+                    
+                    # ▼▼▼ 修正：操作の保持時間をカウントする ▼▼▼
+                    if getattr(tr, 'prev_run_status', "") == calc_status:
+                        tr.holding_time += dt
+                    else:
+                        tr.holding_time = 0.0
+                    
+                    tr.prev_run_status = calc_status
                     tr.run_status = calc_status
+                    # ▲▲▲ 修正ここまで ▲▲▲
             # === 追加ここまで ===
                 
                 

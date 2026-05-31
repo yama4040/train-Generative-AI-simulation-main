@@ -8,10 +8,10 @@ import TrainEditor from './TrainEditor';
 const NETWORK_STORAGE_KEY = 'route_network_v2';
 
 const DEFAULT_VEHICLE_PARAMS = {
-  max_speed: 60,
-  length: 200,
-  weight: 30.0,             // 追加: 既定の車両重量(t)
-  factor_of_inertia: 1.1,   // 追加: 既定の慣性係数
+  max_speed: 100.0,            // 追加: 既定の最大速度(km/h)
+  length: 20,
+  weight: 28.0,             // 追加: 既定の車両重量(t)
+  factor_of_inertia: 1.0123,   // 追加: 既定の慣性係数
   accel: 3.2,
   decel: 4.0,
   low_precision_accel: 3.0,
@@ -19,7 +19,8 @@ const DEFAULT_VEHICLE_PARAMS = {
   safe_gap: 20.0,
   min_follow_speed: 20.0,
   accel_sign_cooldown: 5.0,
-  idm_delta: 4.0
+  idm_delta: 4.0,
+  coast_reaccel_margin: 15.0  // 追加
 };
 
 const VEHICLE_PARAM_FIELDS = [
@@ -34,7 +35,8 @@ const VEHICLE_PARAM_FIELDS = [
   { key: 'safe_gap', label: '安全余裕距離', unit: 'm', min: 0, step: 1 },
   { key: 'min_follow_speed', label: '追従時最低速度', unit: 'km/h', min: 0, step: 0.1 },
   { key: 'accel_sign_cooldown', label: '加減速切替抑制', unit: 's', min: 0, step: 0.1 },
-  { key: 'idm_delta', label: 'IDM 速度指数', unit: '', min: 1, step: 0.1 }
+  { key: 'idm_delta', label: 'IDM 速度指数', unit: '', min: 1, step: 0.1 },
+  { key: 'coast_reaccel_margin', label: '再加速マージン', unit: 'km/h', min: 0, step: 0.1 } // 追加
 ];
 
 const FRAME_BUFFER_LOW_WATERMARK = 30;
@@ -1873,24 +1875,26 @@ export default function App() {
             )}
 
             {activeTab === 'routeEditor' && (
-              <div className="route-tables">
-                <div className="route-table-card">
+              <div className="route-table-card">
                   <div className="route-table-title">線路</div>
-                  <table className="log-table">
-                    <thead>
-                      <tr>
-                        <th>ID</th>
-                        <th>開始地点</th>
-                        <th>終了地点</th>
-                        <th>長さ(m)</th>
-                        <th>勾配(‰)</th>
-                        <th>曲線半径(m)</th>
-                        <th>制限速度(km/h)</th>
-                        <th>走行時分(秒)</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  {/* ▼▼▼ この div でテーブルを囲む（高さ制限とスクロール） ▼▼▼ */}
+                  <div style={{ maxHeight: '250px', overflowY: 'auto', borderBottom: '1px solid #ddd' }}>
+                    <table className="log-table" style={{ margin: 0 }}>
+                      {/* ▼▼▼ thead をスクロール時に上部固定する ▼▼▼ */}
+                      <thead style={{ position: 'sticky', top: 0, backgroundColor: '#f0f4f8', zIndex: 10, outline: '1px solid #ddd' }}>
+                        <tr>
+                          <th>ID</th>
+                          <th>開始地点</th>
+                          <th>終了地点</th>
+                          <th>長さ(m)</th>
+                          <th>勾配(‰)</th>
+                          <th>曲線半径(m)</th>
+                          <th>制限速度(km/h)</th>
+                          <th>走行時分(秒)</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
                       {segments.map((segment) => {
                         const lengthValue = Number.isFinite(segment.length) ? segment.length : getSegmentDistance(segment);
                         return (

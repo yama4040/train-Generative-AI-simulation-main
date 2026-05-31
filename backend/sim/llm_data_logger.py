@@ -60,6 +60,7 @@ def _call_openai_api(prompt_text: str) -> str:
                 {"role": "user", "content": prompt_text}
             ],
             temperature=0.0,
+            timeout=60.0,
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -81,7 +82,7 @@ class LLMDataCollector:
         
         # CSVヘッダーに 'time_to_next_station' を追加
         base_headers = [
-            "time", "train_id", "phase", "current_notch", "speed_limit", "current_speed",
+            "time", "train_id", "phase", "current_notch", "holding_time", "speed_limit", "current_speed",
             "dist_to_next_station", "time_to_next_station", "delay", "current_gradient", 
             "next_limit_info", "next_gradient_info"
         ]
@@ -152,12 +153,16 @@ class LLMDataCollector:
             current_notch = "惰行中"
         else:
             current_notch = "停止・その他"
+        
+        # 追加: 保持時間の取得
+        holding_time = round(getattr(tr, 'holding_time', 0.0), 1)
 
         return {
             "time": time,
             "train_id": tr.id,
             "phase": phase,
             "current_notch": current_notch,
+            "holding_time": holding_time, # ★追加
             "speed_limit": current_limit,
             "current_speed": tr.speed,
             "dist_to_next_station": dist_to_next_station,
@@ -172,7 +177,7 @@ class LLMDataCollector:
     def _determine_phase(self, tr, time, dist_to_station, limit_dist, limit_speed) -> str:
         time_since_departure = time - getattr(tr, 'last_station_departure_time', 0.0)
         if dist_to_station <= 400.0: return "次駅への減速フェーズ（駅手前400m以内）"
-        elif limit_dist <= 500.0 and limit_speed < tr.speed: return "制限速度接近に伴い減速中"
+        elif limit_dist <= 500.0 and limit_speed < tr.speed: return "制限速度区間に接近中（500m以内に制限区間在り）"
         elif getattr(tr, 'run_status', '') == "ACCELE" and time_since_departure <= 20.0: return "駅出発直後の加速フェーズ（20秒以内）"
         else: return "巡航フェーズ（駅間走行中）"
 
@@ -248,18 +253,28 @@ $reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$
 
     def generate_eval_prompt(self, features: Dict[str, Any]) -> str:
         """② 直接評価モード用のプロンプト（新規）"""
-        system_instruction = """あなたは列車の自動運転を評価する「運転監督エキスパート」です。
+        system_instruction = """あなたは熟練の鉄道運転士として列車の自動運転を評価する「運転監督エキスパート」です。
 現在の走行状況と直前の「運転操作（ノッチ）」，その先の線路状況（制限速度や勾配，次駅までの残り距離）を分析し、その運転操作が適切であったかを 0.0（極めて危険・不適切）から 1.0（極めて優秀・適切）の範囲で総合評価（reward）してください。
 
-#評価の観点（Tri-Drive原則）
-1. 安全性 (Survival): 制限速度を超過するような操作は重大なペナルティ。目的地点への安全な到着かつ定時運行に寄与しているか。
-2. 快適性 (Confidence): 制限速度や勾配が安定している区間で、不必要な加減速を繰り返していないか。
-3. 効率性 (Competence): 減速が必要な場面で適切にブレーキをかけられているか、または惰行でエネルギーを節約できているか。
+# 評価の観点（Tri-Drive原則）と分析のステップ
+以下の3つの原則に基づき、現在の状況から「理想的な運転操作」を逆算して評価してください。
+
+1. 安全性 (Survival) - 最優先事項
+   - 制限速度の厳守: 現在の制限速度および「前方の制限速度」を絶対に超過しないこと。遅延回復よりも速度超過の防止を優先してください。
+   - 停止距離の確保: 次駅や低い制限速度が迫っている場合、手遅れになる前に十分な余裕をもって減速（ブレーキ）を開始しているか。
+
+2. 効率性 (Competence) - 省エネと惰行の活用
+   - 駅までの残り距離と残り時間から、定時到着に必要な「平均速度」を推算してください。
+   - 駅到着前の減速（ブレーキ）にかかる時間と距離，惰行による速度低下を考慮すると、巡航区間で保つべき速度は平均速度より少し高くなることを加味してください。
+   - 算出された必要速度を現在の速度が満たしている（定時到着に余裕がある）場合、力行（加速）を続けるのはエネルギーの無駄です。「惰行」による自然減速を活用して定時を狙う操作を高く評価してください。
+
+3. 快適性 (Confidence) - 滑らかな走行
+   - 制限速度や勾配が安定している区間で、不必要な加減速（数秒ごとのノッチの切り替え）を繰り返していないか。
 """
         current_status = f"""
 # 現在の走行状況と運転操作
 - 走行フェーズ: {features['phase']}
-- **現在の運転操作**: {features['current_notch']}  <-- 【重要】この操作が今の状況に合っているかを評価してください。
+- **現在の運転操作**: {features['current_notch']} （継続時間: {features['holding_time']} 秒） <-- 【重要】この操作が今の状況に合っているかを評価してください。
 - 速度情報: 制限速度 {features['speed_limit']} km/h に対し、現在 {features['current_speed']:.1f} km/h で走行中
 - 次駅への情報: 次駅までの残り距離{features['dist_to_next_station']:.1f} mに対し，定時到着まで残り {features['time_to_next_station']} 秒
 - 運行状況: 計画ダイヤに対し {features['delay']} 秒の遅延
@@ -269,13 +284,13 @@ $reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$
 """
         output_format = """
 # 推論と出力の指示
-現在の状況に対して路線全体や，駅間の走行を考えた時に「その運転操作」が安全か、快適か、効率的かを分析してください。
-また，定時到着に寄与しているかについても，駅までの残り距離と定時到着までの残り時間から最適速度を算出し評価をしてください．その際，駅到着前に減速することや制限速度を超過しないといったことを考慮して最適な行動を評価してください．
-その後、0.0〜1.0の数値で評価を下してください。
-出力する数値は0.1刻みで、理由も必ず100文字程度で簡潔に説明してください。
+まず「reason」にて、残り距離・時間から必要な速度を推算し、現在の速度、制限速度、前方制限、駅での減速、惰行の有効性をすべて加味した上で、現在の運転操作が妥当かどうかを100文字程度で論理的に説明してください。
+また，ノッチの切り替えの頻度や前方の線路状況も考慮して、現在の操作が快適な走行につながっているかも評価してください。
+その後、0.1刻みの数値（0.0〜1.0）で最終的な評価（reward）を出力してください。基本点1.0から不適切な要素があれば減点する方式で考えると正確です。
+
 {
-  "reason": "制限速度には余裕がありますが、巡航フェーズの平坦な区間において不必要なブレーキをかけており、乗り心地とエネルギー効率が低下しています。したがって基本点1.0から乗り心地悪化で-0.2の減点とします。",
-  "reward": 0.8
+  "reason": "定時到着には平均70km/h必要ですが駅減速を考慮すると現状の85km/hは適切です。前方制限もなく時間に余裕があるため「惰行」で省エネを図る現在の操作は安全かつ効率的です。",
+  "reward": 1.0
 }
 """
         return system_instruction + current_status + output_format
@@ -305,9 +320,10 @@ $reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$
             reason, reward = call_llm_for_eval(prompt)
             row = [
                 round(time, 1), tr.id, features["phase"], features["current_notch"], 
+                features["holding_time"],  # <--- 【追加】ここ！
                 features["speed_limit"], round(features["current_speed"], 2), 
                 round(features["dist_to_next_station"], 1), 
-                features["time_to_next_station"],  # <--- 【修正】ここを追加！
+                features["time_to_next_station"],  
                 features["delay"], 
                 features["current_gradient"], features["next_limit_info"], 
                 features["next_gradient_info"], reward, reason
