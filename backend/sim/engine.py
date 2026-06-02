@@ -98,12 +98,14 @@ class RuntimeTrain:
     weight: float               # 追加
     factor_of_inertia: float    # 追加
     coast_reaccel_margin: float    # ← 【重要】必ず speed: float = 0.0 よりも「上」に書いてください！
+    
     max_speed: float
     accel: float
     decel: float
     start_time: float
     index: int
 
+    driving_mode: str = "normal"  # <--- 【追加】スピード=0 より上に書く！
     speed: float = 0.0
     leg_index: int = 0
     pos_in_leg: float = 0.0
@@ -123,6 +125,8 @@ class RuntimeTrain:
     # ▼▼▼ 追加 ▼▼▼
     prev_run_status: str = "STOPPED"
     holding_time: float = 0.0
+    noise_timer: float = 0.0      # <--- 【追加】スピード=0 より下に書く
+    forced_status: str = ""       # <--- 【追加】
 
     def current_leg(self) -> Optional[RouteLeg]:
         if self.finished or self.leg_index >= len(self.route.legs):
@@ -1187,6 +1191,7 @@ def run_simulation_iter(
             factor_of_inertia=_vehicle_param(cfg, "factor_of_inertia", default_factor_of_inertia, 1.0),
             coast_reaccel_margin=_vehicle_param(cfg, "coast_reaccel_margin", default_coast_reaccel_margin, 0.0), # 追加
             # --- ここまで ---
+            driving_mode=str(cfg.get("driving_mode") or "normal"), # <--- 【追加】
             max_speed=_vehicle_param(cfg, "max_speed", default_max_speed, 1e-6),
             accel=accel,
             decel=decel,
@@ -1566,8 +1571,19 @@ def run_simulation_iter(
                     current_limit = seg_limit if seg_limit > 0 else tr.max_speed
                     current_limit = min(current_limit, tr.max_speed)
                     
+                    # === 【追加】モードによる制限速度の改ざん ===
+                    if tr.driving_mode == "speed_over":
+                        current_limit += 15.0  # AIに制限速度を15km/h高く誤認させる
+                    
                     # 停止位置・前方制限速度までの距離を取得
                     limit_dist, limit_speed = _next_speed_limit_target(tr, segments)
+                    
+                    # === 【追加】モードによる停止目標距離の改ざん ===
+                    modified_stop_distance = stop_distance
+                    if tr.driving_mode == "overrun":
+                        modified_stop_distance += 15.0  # 駅の奥 15m を目標にする
+                    elif tr.driving_mode == "short_stop":
+                        modified_stop_distance = max(0.0, modified_stop_distance - 20.0) # 駅の手前 20m を目標にする
                     
                     # 減速開始距離の計算 (余裕を持たせるためのマージンを追加)
                     margin = (tr.speed / 3.6) * dt
@@ -1598,6 +1614,26 @@ def run_simulation_iter(
                             else:
                                 calc_status = "ACCELE"
                     # === 修正ここまで ===
+                    
+                   # === 【追加】ハンチングモード（操作の強制上書き） ===
+                    import random
+                    if tr.driving_mode in ("hunting_coast", "hunting_brake"):
+                        # 絶対的なブレーキが必要な距離（駅や制限減速）では安全のため上書きしない
+                        # 追加: 速度が45km/h以上の場合のみハンチングを有効にする
+                        if modified_stop_distance > req_stop_dist and limit_dist > req_limit_dist and tr.speed >= 45.0:
+                            tr.noise_timer -= dt
+                            if tr.noise_timer <= 0.0:
+                                tr.noise_timer = random.uniform(1.0, 5.0) # 1〜5秒で操作をランダム反転
+                                if tr.driving_mode == "hunting_coast":
+                                    tr.forced_status = "ACCELE" if random.random() < 0.5 else "COAST"
+                                elif tr.driving_mode == "hunting_brake":
+                                    tr.forced_status = "ACCELE" if random.random() < 0.5 else "BRAKE"
+                            
+                            if tr.forced_status:
+                                calc_status = tr.forced_status
+                        else:
+                            # 45km/h未満、あるいは安全な停止・減速が必要な状況では強制状態を解除
+                            tr.forced_status = ""
                     
                     """
                     # 物理パラメータの取得

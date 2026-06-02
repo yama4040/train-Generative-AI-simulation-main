@@ -779,7 +779,8 @@ export default function App() {
     trains: trains.map((train) => ({
       ...train,
       route_id: train.route_id,
-      start_time: normalizeStartTime(train.start_time)
+      start_time: normalizeStartTime(train.start_time),
+      driving_mode: train.driving_mode || 'normal'  // <--- 【追加】
     })),
     dt,
     duration,

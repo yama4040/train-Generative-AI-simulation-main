@@ -255,6 +255,23 @@ export default function TrainEditor({
             />
           </label>
           {/* ▲▲▲ 追加 ▲▲▲ */}
+          {/* ▼▼▼ 追加 ▼▼▼ */}
+          <label>
+            運転モード:{' '}
+            <select
+              value={t.driving_mode || 'normal'}
+              onChange={(e) => update(i, 'driving_mode', e.target.value)}
+              style={{ width: '180px' }}
+            >
+              <option value="normal">通常運転</option>
+              <option value="hunting_coast">ハンチング (加速-惰行)</option>
+              <option value="hunting_brake">ハンチング (加速-減速)</option>
+              <option value="speed_over">制限速度超過 (+15km/h)</option>
+              <option value="overrun">駅オーバーラン (+15m)</option>
+              <option value="short_stop">駅手前停止 (-20m)</option>
+            </select>
+          </label>
+          {/* ▲▲▲ 追加 ▲▲▲ */}
           <label>
             加速度(km/h/s):{' '}
             <input
