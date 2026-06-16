@@ -21,12 +21,15 @@ export default function TrainEditor({
   routes = [],
   simulationMode = 'low_precision',
   setSimulationMode,
-  vehicleParams = {}
+  vehicleParams = {},
+  // ▼▼▼ 追加 ▼▼▼
+  llmTargetTrainId,
+  setLlmTargetTrainId
 }) {
   const defaultMaxSpeed = Number.isFinite(vehicleParams.max_speed) && vehicleParams.max_speed > 0 ? vehicleParams.max_speed : 100;
   const defaultTrainLength = Number.isFinite(vehicleParams.length) && vehicleParams.length > 0 ? vehicleParams.length : 20;
   const defaultAccel = Number.isFinite(vehicleParams.accel) && vehicleParams.accel > 0 ? vehicleParams.accel : 3.2;
-  const defaultDecel = Number.isFinite(vehicleParams.decel) && vehicleParams.decel > 0 ? vehicleParams.decel : 4.0;
+  const defaultDecel = Number.isFinite(vehicleParams.decel) && vehicleParams.decel > 0 ? vehicleParams.decel : 2.5;
   // --- 以下2行を追加 ---
   const defaultWeight = Number.isFinite(vehicleParams.weight) && vehicleParams.weight > 0 ? vehicleParams.weight : 28.0;
   const defaultFactorOfInertia = Number.isFinite(vehicleParams.factor_of_inertia) && vehicleParams.factor_of_inertia >= 1.0 ? vehicleParams.factor_of_inertia : 1.0123;
@@ -215,6 +218,22 @@ export default function TrainEditor({
 
       {trains.map((t, i) => (
         <div key={i} style={{ border: '1px solid #ddd', padding: '8px', marginTop: '8px' }}>
+          {/* ▼▼▼ 追加: LLMターゲット選択ラジオボタン ▼▼▼ */}
+          <div style={{ marginBottom: '8px', padding: '4px 8px', backgroundColor: '#eaf4ff', borderLeft: '4px solid #1f6feb', display: 'inline-block' }}>
+            <label style={{ cursor: 'pointer', fontWeight: 'bold', color: '#0b3d91' }}>
+              <input
+                type="radio"
+                name="llmTarget"
+                value={t.train_id}
+                checked={llmTargetTrainId === t.train_id || (i === 0 && !llmTargetTrainId)}
+                onChange={() => setLlmTargetTrainId(t.train_id)}
+                style={{ marginRight: '6px' }}
+              />
+              この列車をLLM評価の主人公にする
+            </label>
+          </div>
+          <br/>
+          {/* ▲▲▲ 追加ここまで ▲▲▲ */}
           <label>
             ID:{' '}
             <input value={t.train_id} onChange={(e) => update(i, 'train_id', e.target.value)} />
@@ -272,6 +291,19 @@ export default function TrainEditor({
             </select>
           </label>
           {/* ▲▲▲ 追加 ▲▲▲ */}
+          {/* ▼▼▼ 今回追加する 運転モード② ▼▼▼ */}
+          <label>
+            運転モード② (評価):{' '}
+            <select
+              value={t.eval_mode || 'normal'}
+              onChange={(e) => update(i, 'eval_mode', e.target.value)}
+              style={{ width: '180px' }}
+            >
+              <option value="normal">通常モード</option>
+              <option value="brake_eval">ブレーキ評価モード</option>
+            </select>
+          </label>
+          {/* ▲▲▲ 追加ここまで ▲▲▲ */}
           <label>
             加速度(km/h/s):{' '}
             <input

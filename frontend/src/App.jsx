@@ -13,7 +13,7 @@ const DEFAULT_VEHICLE_PARAMS = {
   weight: 28.0,             // 追加: 既定の車両重量(t)
   factor_of_inertia: 1.0123,   // 追加: 既定の慣性係数
   accel: 3.2,
-  decel: 4.0,
+  decel: 2.5,
   low_precision_accel: 3.0,
   low_precision_decel: 4.0,
   safe_gap: 20.0,
@@ -64,13 +64,15 @@ export default function App() {
   const [logEntries, setLogEntries] = useState([]);
   const [running, setRunning] = useState(false);
   const [ws, setWs] = useState(null);
-  const [dt, setDt] = useState(0.5);
+  const [dt, setDt] = useState(0.1);
   const [duration, setDuration] = useState(120);
   const [outputInterval, setOutputInterval] = useState(1.0);
   const [playbackSpeed, setPlaybackSpeed] = useState(10);
   // ▼▼▼ これを1行追加 ▼▼▼
-  const [llmInterval, setLlmInterval] = useState(30);
+  const [llmInterval, setLlmInterval] = useState(1);
   const [simulationMode, setSimulationMode] = useState('low_precision');
+  // ▼▼▼ この1行を追加 ▼▼▼
+  const [llmTargetTrainId, setLlmTargetTrainId] = useState('');
   const [idmTimeHeadway, setIdmTimeHeadway] = useState(1.5);
   const [headwayTarget, setHeadwayTarget] = useState(120);
   const [headwayEpsilon, setHeadwayEpsilon] = useState(10);
@@ -780,7 +782,8 @@ export default function App() {
       ...train,
       route_id: train.route_id,
       start_time: normalizeStartTime(train.start_time),
-      driving_mode: train.driving_mode || 'normal'  // <--- 【追加】
+      driving_mode: train.driving_mode || 'normal',  // <--- 【追加】
+      eval_mode: train.eval_mode || 'normal'
     })),
     dt,
     duration,
@@ -788,6 +791,8 @@ export default function App() {
     simulation_mode: simulationMode,
     // ▼▼▼ これを1行追加 ▼▼▼
     llm_interval: llmInterval,
+    // ▼▼▼ この1行を追加 ▼▼▼
+    llm_target_train_id: llmTargetTrainId || (trains.length > 0 ? trains[0].train_id : ''),
     idm_T: idmTimeHeadway,
     headway_target: headwayTarget,
     headway_epsilon: headwayEpsilon,
@@ -1520,6 +1525,9 @@ export default function App() {
               simulationMode={simulationMode}
               setSimulationMode={setSimulationMode}
               vehicleParams={sanitizeVehicleParams(vehicleParams)}
+              // ▼▼▼ この2行を追加 ▼▼▼
+              llmTargetTrainId={llmTargetTrainId}
+              setLlmTargetTrainId={setLlmTargetTrainId}
             />
           </>
         )}

@@ -394,6 +394,9 @@ def _normalize_trains(raw_trains: Any, route_ids: set) -> List[Dict[str, Any]]:
         train["route_id"] = str(route_id)
         train["length"] = length
         train["start_time"] = start_time
+        # ▼▼▼ 追加: 運転モード②（評価モード）を安全に取得 ▼▼▼
+        train["eval_mode"] = str(t.get("eval_mode", "normal"))
+        # ▲▲▲ 追加ここまで ▲▲▲
         trains.append(train)
 
     return trains
@@ -481,8 +484,13 @@ async def simulate(request: Request):
     output_interval = payload.get("output_interval", dt)
     simulation_mode = payload.get("simulation_mode", "low_precision")
     
-    # ▼▼▼ これを追加 ▼▼▼
-    llm_interval = float(payload.get("llm_interval", 30.0))
+    # ▼▼▼ 追加: LLM関連のパラメータを取得 ▼▼▼
+    llm_target_train_id = payload.get("llm_target_train_id", "")
+    llm_interval = payload.get("llm_interval", 30.0)
+    try:
+        llm_interval = float(llm_interval)
+    except (TypeError, ValueError):
+        llm_interval = 30.0
     # ▲▲▲ 追加ここまで ▲▲▲
     
     idm_T = payload.get("idm_T", 1.5)
@@ -533,8 +541,9 @@ async def simulate(request: Request):
         dt=dt,
         duration=duration,
         simulation_mode=simulation_mode,
-        # ▼▼▼ これを追加 ▼▼▼
+        # ▼▼▼ 追加: エンジンへ渡す ▼▼▼
         llm_interval=llm_interval,
+        llm_target_train_id=llm_target_train_id,
         # ▲▲▲ 追加ここまで ▲▲▲
         idm_T=idm_T,
         headway_target=headway_target,
@@ -622,8 +631,13 @@ async def websocket_sim(ws: WebSocket):
         duration = float(params.get("duration", 60.0))
         output_interval = params.get("output_interval", dt)
         simulation_mode = params.get("simulation_mode", "low_precision")
-        # ▼▼▼ これを追加 ▼▼▼
-        llm_interval = float(params.get("llm_interval", 30.0))
+        # ▼▼▼ 追加: LLM関連のパラメータを取得 ▼▼▼
+        llm_target_train_id = params.get("llm_target_train_id", "")
+        llm_interval = params.get("llm_interval", 30.0)
+        try:
+            llm_interval = float(llm_interval)
+        except (TypeError, ValueError):
+            llm_interval = 30.0
         # ▲▲▲ 追加ここまで ▲▲▲
         idm_T = params.get("idm_T", 1.5)
         headway_target = params.get("headway_target", 120.0)
@@ -685,8 +699,9 @@ async def websocket_sim(ws: WebSocket):
             dt=dt,
             duration=duration,
             simulation_mode=simulation_mode,
-            # ▼▼▼ これを追加 ▼▼▼
+            # ▼▼▼ 追加: エンジンへ渡す ▼▼▼
             llm_interval=llm_interval,
+            llm_target_train_id=llm_target_train_id,
             # ▲▲▲ 追加ここまで ▲▲▲
             idm_T=idm_T,
             headway_target=headway_target,

@@ -15,6 +15,7 @@ from datetime import datetime # ▼▼▼ この1行を追加 ▼▼▼
 
 from .models import Segment, Station
 from .llm_data_logger import LLMDataCollector # 追加
+import random
 
 
 DEFAULT_VEHICLE_PARAMS = {
@@ -26,7 +27,7 @@ DEFAULT_VEHICLE_PARAMS = {
     "decel": 4.0,
     "low_precision_accel": 3.0,
     "low_precision_decel": 4.0,
-    "safe_gap": 20.0,
+    "safe_gap":50.0,
     "min_follow_speed": 20.0,
     "accel_sign_cooldown": 5.0,
     "idm_delta": 4.0,
@@ -119,6 +120,12 @@ class RuntimeTrain:
     waiting_since: Optional[float] = None
     crashed: bool = False
     active: bool = True
+    
+    # ▼▼▼ 追加: 運転モード②（評価モード）管理用 ▼▼▼
+    eval_mode: str = "normal"      # "normal" (通常) | "brake_eval" (ブレーキ評価)
+    phase: str = "STOPPED"         # "ACCELERATING" | "COASTING" | "DECELERATING" | "STOPPED"
+    prev_phase: str = "STOPPED"    # 前ステップのフェーズ
+    
     run_status: str = "STOPPED"  # <--- この行を追加
     delay: float = 0.0  # <--- この1行を追加
     time_to_next_station: float = 0.0  # <--- 【追加】定時到着までの残り時間
@@ -127,6 +134,21 @@ class RuntimeTrain:
     holding_time: float = 0.0
     noise_timer: float = 0.0      # <--- 【追加】スピード=0 より下に書く
     forced_status: str = ""       # <--- 【追加】
+    # ▼▼▼ 今回追加する3つの変数 ▼▼▼
+    current_stop_offset: float = 0.0
+    is_overrunning: bool = False
+    overrun_target_leg_index: Optional[int] = None
+    # ▼▼▼ 追加 ▼▼▼
+    prev_notch: str = ""
+    prev_notch_duration: float = 0.0
+    last_station_departure_time: float = 0.0  # <--- 【追加】駅（または初期）出発時刻
+    # ▼▼▼ 【追加】CBTCブレーキパターンの許容速度（信号現示）を保持する変数 ▼▼▼
+    cbtc_speed_limit: float = 0.0  
+    # ▲▲▲ 追加ここまで ▲▲▲
+    
+    pending_arrival_leg_index: Optional[int] = None
+    pending_travel: float = 0.0
+    final_stop_error: float = 0.0
 
     def current_leg(self) -> Optional[RouteLeg]:
         if self.finished or self.leg_index >= len(self.route.legs):
@@ -1135,6 +1157,7 @@ def run_simulation_iter(
     simulation_mode: str = "low_precision",
     # ▼▼▼ 引数に llm_interval を追加 ▼▼▼
     llm_interval: float = 30.0,
+    llm_target_train_id: str = "", # <--- 【追加】
     idm_T: float = 1.5,
     headway_target: float = 120.0,
     headway_k: float = 0.005,
@@ -1181,6 +1204,9 @@ def run_simulation_iter(
             accel = _vehicle_param(cfg, "accel", default_accel, 1e-6)
             decel = _vehicle_param(cfg, "decel", default_decel, 1e-6)
         start_time = max(0.0, _as_float(cfg.get("start_time"), 0.0))
+        d_mode = str(cfg.get("driving_mode") or "normal").lower()
+        c_offset = random.uniform(5.0, 15.0) if d_mode == "overrun" else (random.uniform(-15.0, -5.0) if d_mode == "short_stop" else 0.0)
+        
         trains.append(RuntimeTrain(
             id=str(cfg.get("train_id") or f"T{idx + 1}"),
             route_id=route_id,
@@ -1192,6 +1218,7 @@ def run_simulation_iter(
             coast_reaccel_margin=_vehicle_param(cfg, "coast_reaccel_margin", default_coast_reaccel_margin, 0.0), # 追加
             # --- ここまで ---
             driving_mode=str(cfg.get("driving_mode") or "normal"), # <--- 【追加】
+            current_stop_offset=c_offset,  # <--- 【追加】
             max_speed=_vehicle_param(cfg, "max_speed", default_max_speed, 1e-6),
             accel=accel,
             decel=decel,
@@ -1199,6 +1226,8 @@ def run_simulation_iter(
             stop_remaining=0.0,
             index=idx,
             active=start_time <= EPS,
+            eval_mode=cfg.get("eval_mode", "normal"), # ▼▼▼ 追加 ▼▼▼
+            last_station_departure_time=start_time,  # <--- 【追加】初期値をセット
         ))
 
     # === 修正: 本当の駅データ（tr.route.station_ids）に完全準拠した理想ダイヤの自動生成 ===
@@ -1265,7 +1294,11 @@ def run_simulation_iter(
                 
                 # レグの制限速度と列車の最高速度の、小さい方を適用
                 limit_kmh = min(seg_limit if seg_limit > 0 else tr.max_speed, tr.max_speed)
-                limit_ms = limit_kmh / 3.6
+                # ▼▼▼ 【修正】惰行による速度低下を考慮し、巡航速度を -5km/h で計算する ▼▼▼
+                # （※駅構内などの極端な低速区間でゼロ以下にならないよう、最低10km/hは担保）
+                effective_cruise_kmh = max(10.0, limit_kmh - 5.0)
+                limit_ms = effective_cruise_kmh / 3.6
+                # ▲▲▲ 修正ここまで ▲▲▲
                 
                 if limit_ms > 0:
                     pure_cruise_time += leg.length / limit_ms
@@ -1367,6 +1400,7 @@ def run_simulation_iter(
                 tr.stop_remaining = 0.0
                 tr.wait_reason = ""
                 tr.block_id = ""
+                tr.last_station_departure_time = time  # <--- 【追加】実際に走り始めた時刻を起点にする
 
         _refresh_interlocking_reservations(trains, section_reservations, reservation_entered)
         _grant_interlocking_reservations(trains, sections, devices_by_route, section_reservations, time)
@@ -1382,6 +1416,43 @@ def run_simulation_iter(
             tr.block_id = ""
             tr.control_reason = ""
             tr.control_block_id = ""
+            
+            # ▼▼▼【修正】前ステップでセットされた完全停車フラグをここで確実にクリアする ▼▼▼
+            tr.just_stopped = False
+            # ▲▲▲ 修正ここまで ▲▲▲
+
+            
+            # === 【追加】前ステップでLLM評価のために保留された駅到着・ワープ処理をここで実行 ===
+            if tr.pending_arrival_leg_index is not None:
+                p_leg_idx = tr.pending_arrival_leg_index
+                
+                # 位置を駅のジャスト位置（ターゲットレグの終端・次レグの始端）に強制ワープ移動させる
+                if p_leg_idx >= len(tr.route.legs) - 1:
+                    if tr.route.circular:
+                        tr.laps_completed += 1
+                        tr.leg_index = 0
+                        tr.pos_in_leg = 0.0
+                    else:
+                        tr.finished = True
+                else:
+                    tr.leg_index = p_leg_idx + 1
+                    tr.pos_in_leg = 0.0
+                
+                # 駅の到着実績時刻の記録
+                arrival_station_index = _leg_stop_station_index(tr.route, p_leg_idx)
+                target_leg = tr.route.legs[p_leg_idx]
+                target_station_id = target_leg.stop_station_id or tr.route.station_ids[arrival_station_index]
+                target_station = stations.get(target_station_id)
+                actual_arrivals[idx][(tr.laps_completed, arrival_station_index)] = time
+                
+                # 駅の停車時間をセット
+                if target_station is not None and not tr.finished:
+                    tr.stop_remaining = max(0.0, _as_float(getattr(target_station, "stop_time", 0.0), 0.0))
+                
+                # 保留フラグをクリア
+                tr.pending_arrival_leg_index = None
+                tr.pending_travel = 0.0
+                tr.speed = 0.0
 
             if tr.finished:
                 continue
@@ -1391,9 +1462,18 @@ def run_simulation_iter(
                 prev_stop_remaining = tr.stop_remaining
                 tr.stop_remaining = max(0.0, tr.stop_remaining - dt)
                 
-                # 【追加】停車時間がちょうどゼロになった瞬間（＝駅出発時刻）を記録
+                # 停車時間がちょうどゼロになった瞬間（＝駅出発時刻）を記録
                 if prev_stop_remaining > 0 and tr.stop_remaining == 0.0:
                     tr.last_station_departure_time = time
+                    # ▼▼▼ 追加: 次の駅に向けたオフセットの決定 ▼▼▼
+                    #import random
+                    if tr.driving_mode == "overrun":
+                        tr.current_stop_offset = random.uniform(5.0, 15.0)
+                    elif tr.driving_mode == "short_stop":
+                        tr.current_stop_offset = random.uniform(-15.0, -5.0)
+                    else:
+                        tr.current_stop_offset = 0.0
+                    # ▲▲▲ 追加ここまで ▲▲▲
                 
                 tr.speed = 0.0
                 continue
@@ -1443,6 +1523,19 @@ def run_simulation_iter(
                 stop_distance = max(0.0, safety_distance)
                 stop_reason = "safety"
                 stop_at_node = False
+            
+            # ▼▼▼ 【追加】CBTCブレーキパターン速度（信号現示）の計算 ▼▼▼
+            if stop_distance == math.inf:
+                tr.cbtc_speed_limit = tr.max_speed
+            elif stop_distance <= 0.0:
+                tr.cbtc_speed_limit = 0.0
+            else:
+                # 停止目標（先行列車や駅）までの距離から v = sqrt(2 * a * x) で許容速度を逆算
+                decel_ms2 = max(1e-6, tr.decel) / 3.6
+                cbtc_limit_ms = math.sqrt(2 * decel_ms2 * stop_distance)
+                tr.cbtc_speed_limit = min(tr.max_speed, cbtc_limit_ms * 3.6)
+            # ▲▲▲ 追加ここまで ▲▲▲
+            
             selected_control_reason = _control_reason_for_stop(stop_reason, stop_at_node)
             selected_control_block_id = _control_block_id_for_stop(
                 tr,
@@ -1555,143 +1648,141 @@ def run_simulation_iter(
                     if travel > safe_dist + 1e-9:
                         travel, new_speed = apply_stop_pattern(safe_dist)
                     reached_target = False
-            # === ここから修正: 物理演算と惰行を考慮した高精度モードのロジック ===
             elif simulation_mode in ("high_precision", "high_precision_llm", "high_precision_llm_eval"):
                 current_leg = tr.current_leg()
                 if current_leg is None:
                     travel, new_speed = 0.0, 0.0
                     tr.run_status = "STOPPED"
                 else:
-                    # 【修正】物理セグメントIDを抽出して属性を取得する
                     raw_seg_id = current_leg.segment_id.split(':')[-1]
                     current_seg = segments.get(raw_seg_id)
                     
-                    # 現在の区間の制限速度を取得（未設定なら列車の最高速度）
                     seg_limit = getattr(current_seg, 'speed_limit', 0.0) if current_seg else 0.0
                     current_limit = seg_limit if seg_limit > 0 else tr.max_speed
                     current_limit = min(current_limit, tr.max_speed)
                     
-                    # === 【追加】モードによる制限速度の改ざん ===
+                    # === モードによる制限速度の改ざん ===
                     if tr.driving_mode == "speed_over":
-                        current_limit += 15.0  # AIに制限速度を15km/h高く誤認させる
+                        current_limit += 15.0
                     
-                    # 停止位置・前方制限速度までの距離を取得
                     limit_dist, limit_speed = _next_speed_limit_target(tr, segments)
                     
-                    # === 【追加】モードによる停止目標距離の改ざん ===
-                    modified_stop_distance = stop_distance
-                    if tr.driving_mode == "overrun":
-                        modified_stop_distance += 15.0  # 駅の奥 15m を目標にする
-                    elif tr.driving_mode == "short_stop":
-                        modified_stop_distance = max(0.0, modified_stop_distance - 20.0) # 駅の手前 20m を目標にする
-                    
-                    # 減速開始距離の計算 (余裕を持たせるためのマージンを追加)
+                    # === 【完全刷新】減速開始距離の正確な予測計算 ===
+                    UNIT_CONVERSION = 28.34467
+                    factor_of_inertia = getattr(tr, 'factor_of_inertia', 1.0123)
+                    raw_seg_id = current_leg.segment_id.split(':')[-1]
+                    current_seg = segments.get(raw_seg_id)
+                    gradient = getattr(current_seg, 'gradient', 0.0) if current_seg else 0.0
+                    curve_radius = getattr(current_seg, 'curve_radius', 0.0) if current_seg else 0.0
+
+                    # 0.5秒刻みで未来のブレーキ軌跡をシミュレーションし、必要な停止距離を厳密に逆算する
+                    pred_v = tr.speed
+                    pred_dist = 0.0
+                    sim_dt = dt
+                    while pred_v > 0:
+                        r_run = 2.39 + 0.0224 * pred_v + 0.00062 * (pred_v**2)
+                        r_curve = 800.0 / curve_radius if curve_radius > 0 else 0.0
+                        r_tot = r_run + gradient + r_curve
+                        # ブレーキ時の減速度（抵抗を加味）
+                        pred_acc = -tr.decel - (r_tot / (UNIT_CONVERSION * factor_of_inertia))
+                        if pred_acc >= 0:
+                            pred_acc = -0.1 # 下り坂等での無限ループ防止フェールセーフ
+                        
+                        v_next = max(0.0, pred_v + pred_acc * sim_dt)
+                        pred_dist += ((pred_v + v_next) / 2.0 / 3.6) * sim_dt
+                        pred_v = v_next
+                        
+                    # 制御マージン（空走時間等）をわずかに追加
+                    # ▼▼▼ 修正: マージンを0.5から0.2に減らしてギリギリを攻める ▼▼▼
                     margin = (tr.speed / 3.6) * dt
-                    req_stop_dist = _braking_distance(tr.speed, tr.decel, dt, 0.0) + margin
+                    req_stop_dist = pred_dist + margin
+                    
+                    # ▼▼▼ 【追加】LLMに渡すために最新の要求ブレーキ距離を保存 ▼▼▼
+                    tr.current_req_stop_dist = req_stop_dist
+                    # ▲▲▲ 追加ここまで ▲▲▲
+                    
                     req_limit_dist = 0.0
                     if limit_speed > 0 and limit_speed < tr.speed:
                         req_limit_dist = _braking_distance(tr.speed, tr.decel, dt, limit_speed) + margin
                     
-                    # === 修正後：ヒステリシス（遊び）を設けた状態判定 ===
-                    if stop_distance <= req_stop_dist:
+                    # === モードによるブレーキ距離のごまかし ===
+                    modified_req_stop_dist = req_stop_dist
+                    if stop_at_node:
+                        modified_req_stop_dist = max(0.0, req_stop_dist - tr.current_stop_offset)
+                    
+                    # === 【完全刷新】ヒステリシスと強制停止の判定 ===
+                    if getattr(tr, 'is_overrunning', False):
+                        calc_status = "BRAKE"
+                    elif stop_distance <= modified_req_stop_dist:
                         calc_status = "BRAKE"
                     elif limit_dist <= req_limit_dist:
                         calc_status = "BRAKE"
                     else:
-                        # 前回（1ステップ前）のステータスを取得
                         prev_status = getattr(tr, 'run_status', "STOPPED")
                         
-                        if prev_status == "COAST":
-                            # 現在が惰行中の場合、制限速度より coast_reaccel_margin km/h 落ちるまでは惰行を維持する
+                        # 1. 駅停車の一発ブレーキ化（最優先：一度ブレーキをかけたら駅に止まるまで緩めない）
+                        if stop_at_node and stop_distance <= 500.0 and prev_status == "BRAKE":
+                            calc_status = "BRAKE"
+                            
+                        # ▼▼▼ 【完全刷新】速度超過時の自動ブレーキと保持 ▼▼▼
+                        elif tr.speed >= current_limit + 1.0:
+                            # 制限速度を1km/h以上超過したらブレーキ作動
+                            calc_status = "BRAKE"
+                        elif prev_status == "BRAKE" and tr.speed > current_limit - 5.0:
+                            # ブレーキ作動後、制限速度-5km/hに落ちるまではブレーキを保持
+                            calc_status = "BRAKE"
+                        elif prev_status == "BRAKE" and tr.speed <= current_limit - 5.0:
+                            # 制限速度-5km/hまで落ちた瞬間、確実に「惰行」へ遷移
+                            calc_status = "COAST"
+                        # ▲▲▲ 刷新ここまで ▲▲▲
+
+                        # 3. 駅接近時（400m以内）の処理（再加速禁止・惰行で流す）
+                        elif stop_at_node and stop_distance <= 400.0:
+                            # 十分な速度（40km/h以上）が出ている場合は、無駄な加速をやめて惰行でブレーキポイントを待つ
+                            if tr.speed >= 40.0:
+                                calc_status = "COAST"
+                            else:
+                                # 速度が低すぎる場合のみ、遅延防止のために通常の加速を許可する
+                                if prev_status == "COAST" and tr.speed < current_limit - tr.coast_reaccel_margin:
+                                    calc_status = "ACCELE"
+                                elif tr.speed >= current_limit:
+                                    calc_status = "COAST"
+                                else:
+                                    calc_status = "ACCELE"
+                                
+                        # 4. 駅間巡航時の通常のヒステリシス処理
+                        elif prev_status == "COAST":
                             if tr.speed < current_limit - tr.coast_reaccel_margin:
                                 calc_status = "ACCELE"
                             else:
                                 calc_status = "COAST"
                         else:
-                            # 現在が加速中（または停止等）の場合、制限速度に達したら惰行に切り替える
                             if tr.speed >= current_limit:
                                 calc_status = "COAST"
                             else:
                                 calc_status = "ACCELE"
-                    # === 修正ここまで ===
-                    
-                   # === 【追加】ハンチングモード（操作の強制上書き） ===
-                    import random
+
+                    # === ハンチングモード（操作の強制上書き） ===
                     if tr.driving_mode in ("hunting_coast", "hunting_brake"):
-                        # 絶対的なブレーキが必要な距離（駅や制限減速）では安全のため上書きしない
-                        # 追加: 速度が45km/h以上の場合のみハンチングを有効にする
-                        if modified_stop_distance > req_stop_dist and limit_dist > req_limit_dist and tr.speed >= 45.0:
+                        if stop_distance > modified_req_stop_dist and limit_dist > req_limit_dist and tr.speed >= 45.0:
                             tr.noise_timer -= dt
                             if tr.noise_timer <= 0.0:
-                                tr.noise_timer = random.uniform(1.0, 5.0) # 1〜5秒で操作をランダム反転
+                                tr.noise_timer = random.uniform(1.0, 5.0)
                                 if tr.driving_mode == "hunting_coast":
                                     tr.forced_status = "ACCELE" if random.random() < 0.5 else "COAST"
                                 elif tr.driving_mode == "hunting_brake":
                                     tr.forced_status = "ACCELE" if random.random() < 0.5 else "BRAKE"
-                            
                             if tr.forced_status:
                                 calc_status = tr.forced_status
                         else:
-                            # 45km/h未満、あるいは安全な停止・減速が必要な状況では強制状態を解除
                             tr.forced_status = ""
-                    
-                    """
-                    # 物理パラメータの取得
-                    train_weight = getattr(tr, 'weight', 30.0)
-                    inertia = getattr(tr, 'factor_of_inertia', 1.1)
-                    gradient = getattr(current_seg, 'gradient', 0.0) if current_seg else 0.0
-                    curve_radius = getattr(current_seg, 'curve_radius', 0.0) if current_seg else 0.0
-                    
-                    # 各種抵抗の算出
-                    run_resist = 0.0
-                    if train_weight > 0:
-                        run_resist = ((2.089 + 0.0394 * tr.speed + 0.000675 * tr.speed**2) / train_weight) * 150.0
-                    route_resist = gradient + (800.0 / curve_radius if curve_radius > 0 else 0.0)
-                    
-                    # 引張力の算出
-                    tractive_effort = 0.0
-                    if calc_status == "ACCELE" and train_weight > 0:
-                        if tr.speed <= 50:
-                            tractive_effort = 374752.0 / 9.8 / train_weight
-                        else:
-                            tractive_effort = (76.513 * tr.speed**2.0 - 16401.0 * tr.speed + 949827.0) / 9.8 / train_weight
-                            
-                    KGF_T_TO_KMHS = 0.03528 # kgf/t -> km/h/s 変換係数
-                    
-                    # 加速度の決定
-                    if calc_status == "BRAKE":
-                        acceleration = -tr.decel
-                    elif calc_status == "ACCELE":
-                        acceleration = ((tractive_effort - route_resist - run_resist) * KGF_T_TO_KMHS) / inertia
-                        # 【追加・安全装置】計算上の加速度が異常値にならないようキャップする
-                        acceleration = min(acceleration, tr.accel)
-                    elif calc_status == "COAST":
-                        acceleration = ((0.0 - route_resist - run_resist) * KGF_T_TO_KMHS) / inertia
-                    
-                    # フェイルセーフ: 惰行中に下り坂等で制限速度を2km/h以上超過した場合は強制ブレーキ
-                    if calc_status == "COAST" and tr.speed > current_limit + 2.0:
-                        calc_status = "BRAKE"
-                        acceleration = -tr.decel
-                    """
-                   # ========================================================
-                    # 修正: DQN論文モデル＋慣性係数の欠落を修正した「完全版」物理演算
-                    # ========================================================
-                    # 単位変換定数: 1000 / (9.8 * 3.6) = 28.34467
-                    UNIT_CONVERSION = 28.34467
-                    
-                    # UIから取得した慣性係数 (例: 1.0123)
-                    factor_of_inertia = getattr(tr, 'factor_of_inertia', 1.0123)
-                    
-                    gradient = getattr(current_seg, 'gradient', 0.0) if current_seg else 0.0
-                    curve_radius = getattr(current_seg, 'curve_radius', 0.0) if current_seg else 0.0
-                    
-                    # 走行抵抗・勾配抵抗・曲線抵抗の算出 [kg/t]
+
+                    # === 物理演算（加速度計算）===
                     run_resist = 2.39 + 0.0224 * tr.speed + 0.00062 * (tr.speed**2)
                     grade_resist = gradient
                     curve_resist = 800.0 / curve_radius if curve_radius > 0 else 0.0
                     total_resist = run_resist + grade_resist + curve_resist
                     
-                    # 引張力(力行)の算出 [kg/t]
                     tractive_effort = 0.0
                     if calc_status == "ACCELE":
                         if 0 <= tr.speed < 42:
@@ -1701,52 +1792,125 @@ def run_simulation_iter(
                         else:
                             tractive_effort = -0.0963 * tr.speed + 26.0284
                             
-                    # 加速度の決定 [km/h/s]
                     if calc_status == "BRAKE":
-                        acceleration = -tr.decel  # UIで設定した 4.0 がマイナス付きで適用されます
+                        # ▼▼▼【重要】ここにも走行抵抗を確実に加算する ▼▼▼
+                        resist_accel = total_resist / (UNIT_CONVERSION * factor_of_inertia)
+                        acceleration = -tr.decel - resist_accel
                     elif calc_status == "ACCELE":
-                        # 正しい物理式: (引張力 - 抵抗) / (単位変換定数 * 慣性係数)
                         acceleration = (tractive_effort - total_resist) / (UNIT_CONVERSION * factor_of_inertia)
                     elif calc_status == "COAST":
-                        # 惰行時は引張力0
                         acceleration = (0.0 - total_resist) / (UNIT_CONVERSION * factor_of_inertia)
                     
-                    # フェイルセーフ: 惰行中に下り坂等で制限速度を2km/h以上超過した場合は強制ブレーキ
                     if calc_status == "COAST" and tr.speed > current_limit + 2.0:
                         calc_status = "BRAKE"
                         acceleration = -tr.decel
-                    # ========================================================
                     
                     # 速度の更新
                     new_speed = tr.speed + (acceleration * dt)
-                    
-                    # 加速時に制限速度を飛び越えないようキャップ（頭打ち）
                     if calc_status == "ACCELE" and new_speed > current_limit:
                         new_speed = current_limit
-                        
                     new_speed = max(0.0, new_speed)
                     travel = ((tr.speed + new_speed) / 2.0 / 3.6) * dt
                     
-                    # 停止位置の行き過ぎ防止
+                   # === 【完全刷新】停止位置の行き過ぎ防止とワープ処理 ===
                     reached_target_local = False
-                    if travel >= stop_distance - 1e-6:
-                        travel = stop_distance
-                        new_speed = 0.0
-                        reached_target_local = True
-                        calc_status = "STOPPED"
-                    reached_target = reached_target_local
                     
-                    
-                    # ▼▼▼ 修正：操作の保持時間をカウントする ▼▼▼
+                    # 1. オーバーラン通過後の完全停止判定
+                    if getattr(tr, 'is_overrunning', False):
+                        if new_speed <= 1e-6:
+                            tr.is_overrunning = False
+                            tr.speed = 0.0
+                            new_speed = 0.0
+                            travel = 0.0 
+                            calc_status = "STOPPED"
+                            stop_at_node = True
+                            
+                            # 【重要】本来の駅の絶対位置と列車の停止位置から真の過走距離を計算
+                            p_leg_idx = tr.overrun_target_leg_index if tr.overrun_target_leg_index is not None else forced_stop_leg_index
+                            tr.final_stop_error = tr.route.cumulative[p_leg_idx + 1] - tr.route_position()
+                            
+                            # 即座にワープせず、次のステップに保留する
+                            tr.pending_arrival_leg_index = p_leg_idx
+                            tr.pending_travel = 0.0
+                            tr.just_stopped = True
+                            reached_target_local = False
+                        else:
+                            pass
+                    else:
+                        # 2. アンダーラン・通常・オーバーラン突入の判定
+                        if tr.driving_mode == "short_stop" and stop_at_node:
+                            if new_speed <= 1e-6:
+                                tr.speed = 0.0
+                                new_speed = 0.0
+                                calc_status = "STOPPED"
+                                
+                                # 誤差計算（手前残りのプラス距離）
+                                tr.final_stop_error = tr.route.cumulative[forced_stop_leg_index + 1] - tr.route_position()
+                                
+                                tr.pending_arrival_leg_index = forced_stop_leg_index
+                                tr.pending_travel = travel
+                                tr.just_stopped = True
+                                reached_target_local = False
+                        else:
+                            if travel >= stop_distance - 1e-6:
+                                if stop_at_node and tr.driving_mode == "overrun" and new_speed > 1e-6:
+                                    tr.is_overrunning = True
+                                    tr.overrun_target_leg_index = forced_stop_leg_index
+                                else:
+                                    # 通常モードでの停車
+                                    tr.speed = 0.0
+                                    new_speed = 0.0
+                                    calc_status = "STOPPED"
+                                    
+                                    if stop_at_node and forced_stop_leg_index is not None:
+                                        tr.final_stop_error = tr.route.cumulative[forced_stop_leg_index + 1] - (tr.route_position() + travel)
+                                        tr.pending_arrival_leg_index = forced_stop_leg_index
+                                        tr.pending_travel = stop_distance
+                                        tr.just_stopped = True
+                                        reached_target_local = False
+                                    else:
+                                        # 駅以外（先行列車や信号）の停止は保留せず即時処理
+                                        travel = stop_distance
+                                        reached_target_local = True
+                                        
+                            # ▼▼▼ 手前で完全に停止してしまった場合のスタック回避 ▼▼▼
+                            elif new_speed <= 1e-6 and stop_at_node:
+                                if stop_distance <= 2.0:  # 残り2m以内なら通常停車として処理
+                                    tr.speed = 0.0
+                                    new_speed = 0.0
+                                    calc_status = "STOPPED"
+                                    
+                                    tr.final_stop_error = tr.route.cumulative[forced_stop_leg_index + 1] - tr.route_position()
+                                    
+                                    tr.pending_arrival_leg_index = forced_stop_leg_index
+                                    tr.pending_travel = stop_distance
+                                    tr.just_stopped = True
+                                    reached_target_local = False
+                                else:
+                                    # 2m以上手前で止まった場合は微速前進
+                                    calc_status = "ACCELE"
+                                    new_speed = 2.0
+                                    travel = ((tr.speed + new_speed) / 2.0 / 3.6) * dt
+
+                    # === 操作保持時間の記録と直前操作のバックアップ ===
                     if getattr(tr, 'prev_run_status', "") == calc_status:
                         tr.holding_time += dt
                     else:
+                        # ▼▼▼ 追加: 切り替わった瞬間に過去の情報を保存 ▼▼▼
+                        tr.prev_notch = getattr(tr, 'prev_run_status', "")
+                        tr.prev_notch_duration = tr.holding_time
+                        # ▲▲▲ 追加ここまで ▲▲▲
                         tr.holding_time = 0.0
-                    
                     tr.prev_run_status = calc_status
                     tr.run_status = calc_status
-                    # ▲▲▲ 修正ここまで ▲▲▲
-            # === 追加ここまで ===
+                    
+                    # ▼▼▼【修正1】ワープ判定の結果を本流の変数に反映させる（絶対に必要）▼▼▼
+                    reached_target = reached_target_local
+
+            # ▼▼▼【修正2】低精度モードや追従モード時のフォールバック計算（絶対に必要）▼▼▼
+            else:
+                travel, new_speed = apply_stop_pattern(stop_distance)
+            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                 
                 
 
@@ -1756,6 +1920,28 @@ def run_simulation_iter(
                 tr.control_block_id = selected_control_block_id
 
             tr.speed = new_speed
+            
+            # ▼▼▼ 追加: 走行フェーズの判定 ▼▼▼
+            tr.prev_phase = tr.phase  # 前回のフェーズを保存
+            if tr.speed <= 1e-6:
+                tr.phase = "STOPPED"
+            elif tr.speed > prev_speed + 1e-6:
+                tr.phase = "ACCELERATING"
+            elif tr.speed < prev_speed - 1e-6:
+                tr.phase = "DECELERATING"
+            else:
+                tr.phase = "COASTING"
+
+            
+            
+            # ▼▼▼ 【修正】今ステップで完全に停車した瞬間を検知 ▼▼▼
+            if prev_speed > 1e-6 and new_speed <= 1e-6 and stop_at_node:
+                tr.just_stopped = True
+            elif getattr(tr, 'just_stopped', False):
+                pass  # 上の物理演算部で既にTrueになっている場合は維持
+            else:
+                tr.just_stopped = False
+            
             if reached_target and stop_at_node and forced_stop_leg_index is not None:
                 target_leg = tr.route.legs[forced_stop_leg_index]
                 arrival_station_index = _leg_stop_station_index(tr.route, forced_stop_leg_index)
@@ -1835,38 +2021,88 @@ def run_simulation_iter(
                     tr.delay = 0.0
         # =================================================================
         
-       # === 追加: LLMデータ収集の呼び出し ===
-        if simulation_mode in ("high_precision_llm", "high_precision_llm_eval") and step % llm_eval_interval == 0:
+        # === 追加: LLMデータ収集の呼び出し ===
+        # ▼▼▼ 【追加】対象列車がちょうど停車したかを判定 ▼▼▼
+        target_id_for_llm = llm_target_train_id if llm_target_train_id else (trains[0].id if trains else "")
+        target_just_stopped = any(tr.id == target_id_for_llm and getattr(tr, 'just_stopped', False) for tr in trains)
+        
+        # ▼▼▼ 【修正】インターバル、または停車した瞬間に呼び出す ▼▼▼
+        if simulation_mode in ("high_precision_llm", "high_precision_llm_eval") and (step % llm_eval_interval == 0 or target_just_stopped):
             
-            # フロントエンドに推論開始を知らせる
-            yield {"type": "llm_status", "status": "thinking"}
-
-            all_success = True
-            called_any = False
-            
+            # ▼▼▼ フィルタリングはロガー側で行うため、ここでは対象列車がいればTrueとする ▼▼▼
+            should_call_llm_this_step = False
             for tr in trains:
-                if tr.active and not tr.finished and not tr.crashed:
-                    # process_and_save の戻り値(True/False)を受け取る
-                    success = data_collector.process_and_save(
-                        tr=tr,
-                        segments=segments,
-                        time=time,
-                        nominal_times=nominal_times[tr.index],
-                        actual_arrivals=actual_arrivals[tr.index]
-                    )
-                    # 1つでもエラーがあれば全体をエラー扱いにする
-                    if success is False:
-                        all_success = False
-                    called_any = True
-            
-            # フロントエンドに結果を知らせる
-            if called_any:
-                if all_success:
-                    yield {"type": "llm_status", "status": "success"}
+                if tr.id == target_id_for_llm and tr.active and not tr.finished and not tr.crashed:
+                    should_call_llm_this_step = True
+                    break
+                        
+            # ▼▼▼ データ保存処理を実行（実際の判定は logger 内部で行われる） ▼▼▼
+            if should_call_llm_this_step:
+                yield {"type": "llm_status", "status": "thinking"}
+
+                all_success = True
+                called_any = False
+                
+                # UIで指定がない場合は最初の列車をターゲットにする
+                target_id = target_id_for_llm
+                
+                for tr in trains:
+                    # ▼▼▼ 修正: ターゲットの主人公列車のみLLMを呼ぶ ▼▼▼
+                    if tr.id == target_id and tr.active and not tr.finished and not tr.crashed:
+                        
+                        forward_info = None
+                        backward_info = None
+                        lead_tr_id = None  # <--- 【追加】先行列車のIDを保持する変数
+                        
+                        # 先行列車（自分の前の列車）の情報を取得
+                        lead_idx = lead_indices[tr.index]
+                        if lead_idx is not None:
+                            lead_tr = trains[lead_idx]
+                            lead_tr_id = lead_tr.id  # <--- 【追加】IDを記憶しておく
+                            if tr.route.circular and tr.route.length > 0:
+                                f_dist = (lead_tr.route_position() - tr.route_position()) % tr.route.length
+                            else:
+                                f_dist = lead_tr.route_position() - tr.route_position()
+                            forward_info = {"id": lead_tr.id, "speed": lead_tr.speed, "distance": max(0.0, f_dist)}
+                            
+                        # 後続列車（自分を先行としている列車）の情報を取得
+                        for idx, l_idx in enumerate(lead_indices):
+                            if l_idx == tr.index and trains[idx].active:
+                                back_tr = trains[idx]
+                                
+                                # ▼▼▼ 【追加】環状線で2列車しかいない場合、先行列車＝後続列車になるため後続情報から除外する ▼▼▼
+                                if back_tr.id == lead_tr_id:
+                                    continue
+                                # ▲▲▲ 追加ここまで ▲▲▲
+
+                                if tr.route.circular and tr.route.length > 0:
+                                    b_dist = (tr.route_position() - back_tr.route_position()) % tr.route.length
+                                else:
+                                    b_dist = tr.route_position() - back_tr.route_position()
+                                backward_info = {"id": back_tr.id, "speed": back_tr.speed, "distance": max(0.0, b_dist)}
+                                break
+
+                        success = data_collector.process_and_save(
+                            tr=tr,
+                            segments=segments,
+                            time=time,
+                            nominal_times=nominal_times[tr.index],
+                            actual_arrivals=actual_arrivals[tr.index],
+                            forward_info=forward_info,
+                            backward_info=backward_info
+                        )
+                        if success is False:
+                            all_success = False
+                        called_any = True
+                
+                # フロントエンドに結果を知らせる
+                if called_any:
+                    if all_success:
+                        yield {"type": "llm_status", "status": "success"}
+                    else:
+                        yield {"type": "llm_status", "status": "error"}
                 else:
-                    yield {"type": "llm_status", "status": "error"}
-            else:
-                yield {"type": "llm_status", "status": "idle"}
+                    yield {"type": "llm_status", "status": "idle"}
 
         all_finished = all(tr.finished or tr.crashed for tr in trains)
         should_emit = time + 1e-9 >= next_emit or all_finished
@@ -1898,6 +2134,7 @@ def run_simulation(
     simulation_mode: str = "low_precision",
     # ▼▼▼ 引数を追加 ▼▼▼
     llm_interval: float = 30.0,
+    llm_target_train_id: str = "", # <--- 【追加】
     idm_T: float = 1.5,
     headway_target: float = 120.0,
     headway_k: float = 0.005,
@@ -1915,6 +2152,7 @@ def run_simulation(
         simulation_mode=simulation_mode,
         # ▼▼▼ 内部呼び出しへ引き渡しを追加 ▼▼▼
         llm_interval=llm_interval,
+        llm_target_train_id=llm_target_train_id,
         idm_T=idm_T,
         headway_target=headway_target,
         headway_k=headway_k,
