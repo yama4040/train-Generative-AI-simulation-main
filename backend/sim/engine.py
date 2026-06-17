@@ -1524,17 +1524,64 @@ def run_simulation_iter(
                 stop_reason = "safety"
                 stop_at_node = False
             
-            # ▼▼▼ 【追加】CBTCブレーキパターン速度（信号現示）の計算 ▼▼▼
-            if stop_distance == math.inf:
-                tr.cbtc_speed_limit = tr.max_speed
-            elif stop_distance <= 0.0:
-                tr.cbtc_speed_limit = 0.0
+            if safety_distance is not None and max(0.0, safety_distance) < stop_distance:
+                stop_distance = max(0.0, safety_distance)
+                stop_reason = "safety"
+                stop_at_node = False
+            
+            # ▼▼▼ ここから上書き・追加するブロック ▼▼▼
+            # === 1. 現在のレグから制限速度（current_limit）を取得 ===
+            current_leg = tr.current_leg()
+            current_seg = None  # 安全のため初期化
+            if current_leg:
+                raw_seg_id = current_leg.segment_id.split(':')[-1]
+                current_seg = segments.get(raw_seg_id)
+                seg_limit = getattr(current_seg, 'speed_limit', 0.0) if current_seg else 0.0
+                current_limit = seg_limit if seg_limit > 0 else tr.max_speed
+                # speed_overモードの補正
+                if tr.driving_mode == "speed_over":
+                    current_limit += 15.0
             else:
-                # 停止目標（先行列車や駅）までの距離から v = sqrt(2 * a * x) で許容速度を逆算
-                decel_ms2 = max(1e-6, tr.decel) / 3.6
-                cbtc_limit_ms = math.sqrt(2 * decel_ms2 * stop_distance)
-                tr.cbtc_speed_limit = min(tr.max_speed, cbtc_limit_ms * 3.6)
-            # ▲▲▲ 追加ここまで ▲▲▲
+                current_limit = tr.max_speed
+
+            # === 2. CBTC専用の停止目標距離を取得（駅停車は除外） ===
+            cbtc_target_dist = math.inf
+            
+            if stop_reason == "safety":
+                # 50m手前までの距離(safety_distance)をそのまま使う
+                cbtc_target_dist = max(0.0, safety_distance)
+            elif stop_reason in ("exclusive_section", "interlocking"):
+                # 単線閉塞や連動装置（赤信号）までの距離
+                cbtc_target_dist = forced_stop_distance
+
+            # === 3. 物理演算の「抵抗」を加味した実効減速度を算出 ===
+            UNIT_CONVERSION = 28.34467
+            factor_of_inertia = getattr(tr, 'factor_of_inertia', 1.0123)
+            
+            run_resist = 2.39 + 0.0224 * tr.speed + 0.00062 * (tr.speed**2)
+            gradient = getattr(current_seg, 'gradient', 0.0) if current_seg else 0.0
+            curve_radius = getattr(current_seg, 'curve_radius', 0.0) if current_seg else 0.0
+            curve_resist = 800.0 / curve_radius if curve_radius > 0 else 0.0
+            
+            total_resist = run_resist + gradient + curve_resist
+            resist_accel = total_resist / (UNIT_CONVERSION * factor_of_inertia)
+            
+            # シミュレータの物理演算と全く同じ実効減速度 (km/h/s) を算出
+            actual_decel_kmhs = tr.decel + resist_accel
+            if actual_decel_kmhs <= 0.1:
+                actual_decel_kmhs = 0.1  # フェールセーフ
+
+            # === 4. CBTC信号現示（ブレーキパターン）の算出 ===
+            if cbtc_target_dist == math.inf:
+                tr.cbtc_speed_limit = current_limit  # 対象がなければ区間の制限速度
+            elif cbtc_target_dist <= 0.0:
+                tr.cbtc_speed_limit = 0.0            # 到達していれば0km/h
+            else:
+                # 物理抵抗込みの実効減速度を使ってパターンを逆算
+                decel_ms2 = actual_decel_kmhs / 3.6  
+                cbtc_limit_ms = math.sqrt(2 * decel_ms2 * cbtc_target_dist)
+                tr.cbtc_speed_limit = min(current_limit, cbtc_limit_ms * 3.6)
+            # ▲▲▲ 上書き・追加するブロックここまで ▲▲▲
             
             selected_control_reason = _control_reason_for_stop(stop_reason, stop_at_node)
             selected_control_block_id = _control_block_id_for_stop(
