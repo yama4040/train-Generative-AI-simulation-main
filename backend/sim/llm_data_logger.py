@@ -60,7 +60,8 @@ def _call_openai_api(prompt_text: str) -> str:
                 {"role": "user", "content": prompt_text}
             ],
             temperature=0.0,
-            timeout=60.0,
+            timeout=120.0,
+            extra_body={"reasoning_effort": "low"},
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -84,8 +85,8 @@ class LLMDataCollector:
         base_headers = [
             "time", "train_id", "phase", "current_notch", "holding_time", 
             "prev_notch", "prev_notch_duration",  
-            "speed_limit", "signal_speed", "current_speed",  # <--- signal_speed を追加
-            "dist_to_next_station", "time_to_next_station", "req_stop_dist", "delay", 
+            "speed_limit", "signal_speed", "current_speed", "required_speed",  # <--- signal_speed, required_speed を追加
+            "dist_to_next_station", "time_to_next_station", "req_stop_dist", "delay",
             "current_gradient", "next_limit_info", "next_gradient_info",
             "forward_info", "backward_info"
         ]
@@ -156,7 +157,13 @@ class LLMDataCollector:
         # ▼▼▼ この1行を追加 ▼▼▼
         time_to_next = round(getattr(tr, 'time_to_next_station', 0.0), 1)
         req_stop_dist = getattr(tr, 'current_req_stop_dist', 0.0)
-        
+
+        # ▼▼▼ 【追加】定時到着に必要な目標速度（required_speed）を算出 ▼▼▼
+        required_speed = self._estimate_required_speed(
+            tr, current_seg, dist_to_next_station, getattr(tr, 'time_to_next_station', 0.0), current_limit
+        )
+        # ▲▲▲ 追加ここまで ▲▲▲
+
         phase = self._determine_phase(tr, time, dist_to_next_station, limit_dist, limit_speed)
 
         raw_status = getattr(tr, 'run_status', '')
@@ -211,8 +218,10 @@ class LLMDataCollector:
             "speed_limit": current_limit,
             "signal_speed": round(signal_speed, 1), # <--- 【追加】
             "current_speed": round(tr.speed, 2),
+            "required_speed": round(required_speed, 1), # <--- 【追加】定時到着に必要な目標速度
             "dist_to_next_station": round(dist_to_next_station, 1), # CSVに合わせて小数第1位
             "req_stop_dist": round(req_stop_dist, 2), # CSVに合わせて小数第2位
+            "delta_stop": round(dist_to_next_station - req_stop_dist, 2), # 停止余裕距離（Python側で算出済み）
             "time_to_next_station": time_to_next,
             "delay": delay,
             "current_gradient": current_gradient,
@@ -267,6 +276,110 @@ class LLMDataCollector:
             if grad != current_grad and abs(grad) > 0: return accum_dist, grad
             accum_dist += leg.length
         return float('inf'), 0.0
+
+    # ==========================================
+    # 2.5 定時到着に必要な目標速度（required_speed）算出
+    # ==========================================
+    # engine.py の物理演算（走行抵抗式・単位変換係数）と揃えることで、
+    # 実際のシミュレーション挙動に近い所要時間を見積もる。
+    _UNIT_CONVERSION = 28.34467
+
+    def _coast_decel_kmh_s(self, speed_kmh: float, gradient: float, curve_radius: float, factor_of_inertia: float) -> float:
+        """惰行中に走行抵抗（転がり抵抗・勾配・曲線）だけで自然に失われる減速度 (km/h/s)"""
+        run_resist = 2.39 + 0.0224 * speed_kmh + 0.00062 * (speed_kmh ** 2)
+        curve_resist = 800.0 / curve_radius if curve_radius > 0 else 0.0
+        total_resist = run_resist + gradient + curve_resist
+        return max(0.0, total_resist / (self._UNIT_CONVERSION * max(factor_of_inertia, 1e-6)))
+
+    def _simulate_travel_time(
+        self, v0_kmh: float, v_target_kmh: float, distance_m: float,
+        accel_kmh_s: float, decel_kmh_s: float,
+        gradient: float, curve_radius: float, factor_of_inertia: float,
+        dt: float = 0.5,
+    ) -> float:
+        """
+        v_target_kmhまで加速→惰行（走行抵抗による自然減速）→最後にブレーキで停止、
+        という走行パターンでdistance_mを走破するのに要する時間(秒)を概算する。
+        """
+        if distance_m <= 0.0:
+            return 0.0
+
+        v = max(0.0, v0_kmh)
+        v_cap = max(v, v_target_kmh)
+        remaining = distance_m
+        decel_ms2 = max(1e-6, decel_kmh_s) / 3.6
+        total_time = 0.0
+
+        for _ in range(6000):  # dt=0.5s換算で最大3000秒分、暴走防止の打ち切り
+            if remaining <= 1e-6:
+                break
+            v_ms = v / 3.6
+            brake_dist = (v_ms ** 2) / (2.0 * decel_ms2)
+
+            if brake_dist >= remaining - 1e-6:
+                v_next = max(0.0, v - decel_kmh_s * dt)
+            elif v < v_cap - 1e-9:
+                v_next = min(v_cap, v + accel_kmh_s * dt)
+            else:
+                coast_decel = self._coast_decel_kmh_s(v, gradient, curve_radius, factor_of_inertia)
+                v_next = max(0.0, v - coast_decel * dt)
+
+            step_dist = ((v + v_next) / 2.0 / 3.6) * dt
+            if step_dist >= remaining:
+                frac = remaining / step_dist if step_dist > 1e-9 else 0.0
+                total_time += dt * frac
+                remaining = 0.0
+                break
+
+            remaining -= step_dist
+            total_time += dt
+            v = v_next
+
+            if v <= 1e-6 and remaining > 1e-6:
+                # 惰行の自然減速だけで停止してしまい、駅まで届かない
+                # → このv_targetでは定時到着不可能として扱う
+                return float('inf')
+
+        return total_time
+
+    def _estimate_required_speed(
+        self, tr, current_seg, dist_to_next_station: float, time_to_next_station: float, speed_cap: float
+    ) -> float:
+        """
+        定時到着に必要な目標速度(km/h)を算出する。
+        「この速度まで加速→惰行で自然減速→最後にブレーキ」という走行で
+        time_to_next_station秒後にdist_to_next_station先へちょうど到着できる
+        最小の目標速度を二分探索で求める（速いほど所要時間が短くなる単調性を利用）。
+        """
+        if dist_to_next_station <= 0.0 or dist_to_next_station >= 9999.0 or time_to_next_station <= 1e-6:
+            return max(0.0, min(getattr(tr, 'speed', 0.0), speed_cap))
+
+        v0 = max(0.0, getattr(tr, 'speed', 0.0))
+        accel = max(1e-6, getattr(tr, 'accel', 3.0))
+        decel = max(1e-6, getattr(tr, 'decel', 4.0))
+        factor_of_inertia = getattr(tr, 'factor_of_inertia', 1.0123)
+        gradient = getattr(current_seg, 'gradient', 0.0) if current_seg else 0.0
+        curve_radius = getattr(current_seg, 'curve_radius', 0.0) if current_seg else 0.0
+        cap = max(v0, speed_cap)
+
+        def travel_time(v_target: float) -> float:
+            return self._simulate_travel_time(
+                v0, v_target, dist_to_next_station, accel, decel,
+                gradient, curve_radius, factor_of_inertia,
+            )
+
+        # 最高速度まで加速しても間に合わない場合は、出せる最速を目標速度とする
+        if travel_time(cap) > time_to_next_station:
+            return cap
+
+        lo, hi = 0.0, cap
+        for _ in range(20):
+            mid = (lo + hi) / 2.0
+            if travel_time(mid) <= time_to_next_station:
+                hi = mid  # midで間に合う → もっと遅い速度でも間に合うか探る
+            else:
+                lo = mid  # midでは間に合わない → もっと速い速度が必要
+        return hi
 
 
     # ==========================================
@@ -345,7 +458,7 @@ $reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$
 # フェーズ別評価基準
 --------------------------------------------------
 ## 加速フェーズ
-目的：必要速度に到達するための安定した加速
+目的：必要速度（required_speed）に到達するための安定した加速
 
 高評価
 - 力行を継続している
@@ -357,7 +470,7 @@ $reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$
 - 不必要なブレーキ
 - 頻繁なノッチ切替
 
-大幅減点
+大幅減点（reward=0.0）
 - 先行列車も存在しないのに低速で惰行または減速している
 
 --------------------------------------------------
@@ -365,51 +478,74 @@ $reward = w_{surv} R_{surv, t} + w_{conf} R_{conf, t} + w_{comp} R_{comp, t}$
 目的：定時性と省エネ性の両立
 
 現在速度が必要速度を十分満たしている場合は惰行を高く評価する。
-必要速度は「現在の速度」と「残り時間」から平均速度を算出し、その平均速度を1.3～1.4倍した速度とする。
+必要速度（required_speed）は、加速にかかる時間・惰行による自然減速・ブレーキにかかる時間と距離を
+考慮した走行シミュレーションによりあらかじめ算出済みの値である。current_statusのrequired_speedを
+必ずそのまま評価に使用し、LLM自身が平均速度などから必要速度を再計算してはならない。
 
 高評価
 - 惰行を活用している
 - 制限速度に余裕がある
 - ノコギリ運転がない
 - 先行列車と後続列車の両方が存在する場合、自列車と先行列車、後続列車の車間がある程度同じである。（誤差±400m程度）
+- 下り勾配を活用した速度の維持（無駄な加速を行っていない）
+
 
 減点
 - 必要以上の力行
 - 惰行不足
+- 下り勾配かつ速度が"制限速度 - 10km/h"にも関わらず加速を行っている（勾配を活用できていない）
+
+大幅減点（reward=0.0）
 - ノコギリ運転
 
 --------------------------------------------------
 ## 次駅減速フェーズ
 目的：所定停止位置への停止
 
-定時性より停止位置精度を優先する。
-評価には必ずreq_stop_distを使用すること。
-LLM独自の停止距離計算は禁止。
+- 定時性より停止位置精度を優先する。
+- 先行列車に接近している場合はCBTCの信号現示に従っているかを重視し先行列車の手前に停止できているかを評価すること。
+- 評価には必ずreq_stop_distを使用すること。
+- LLM独自の停止距離計算は禁止。
 
 ### ブレーキ開始判定
-下記の式を用いて評価を行う。
-- delta_stop = dist_to_next_station - req_stop_dist
+delta_stop（= dist_to_next_station - req_stop_dist）はPython側で算出済みの値である。
+current_statusのdelta_stopの値を必ずそのまま評価に使用し、LLM自身がdist_to_next_stationとreq_stop_distから再計算してはならない。
 
 ### 評価目安
+"次駅減速フェーズ"では，まず先行列車が在線しているかを確認し，在線している場合は下記の"先行列車が居る場合"を優先して評価してください。
+先行列車が居ない、もしくは十分な距離（600m以上）を保てている場合は"ブレーキをかけている場合"と"ブレーキをかけていない場合"を参考に評価してください。
+また、実際の運転では、ブレーキ応答の遅れなどにより、current_speedとsignal_speed、が完全に一致するこやdelta_stop=0となる場合は少ないです。
+そのためcurrent_speedとsignal_speedの速度差が±2km/h程度の場合は「制御上自然な誤差」、delta_stopの値が±2m以内の場合はとして評価してください。
+
+先行列車が居る場合
+- current_speed ≒ signal_speed （2つの速度の差が±2km/h程度）かつ ブレーキ中
+  → 高評価（たとえ，駅の手前に停止する可能性があっても信号現示に従っているとして高く評価してください）
+- current_speed > signal_speed かつ ブレーキをかけていない
+  → 信号を無視しているとして大幅減点（reward=0.0）
+- delta_stop > 0 かつ 加速をしている （かつ CBTCの信号現示を2km/h以上オーバーしていない）
+  → 先行列車が動き出し，自列車も駅に向かって加速が出来ているとして，高く評価してください。
+
 ブレーキをかけている場合
-- 高評価：|delta_stop| ≤ 3m
-- やや減点：3m < |delta_stop| ≤ 5m
-- 大幅減点：|delta_stop| > 5m
+- 高評価：|delta_stop| ≤ 2m
+- やや減点：2m < |delta_stop| ≤ 5m
+- 大幅減点（reward=0.0）：|delta_stop| > 5m
 
 ブレーキをかけていない場合
-- 高評価：delta_stop >= 0m（このタイミングでブレーキをかけると駅手前に停車する可能性があるため）
-- やや減点：-5m < delta_stop <0m 
-- 大幅減点：delta_stop < -5m（オーバーランリスクが高いため）
+- 高評価：delta_stop >= 0m（このタイミングでブレーキをかけると駅手前に停車する可能性があるためブレーキをかけていないのは適切です）
+  ※ただし、先行列車も無いのに、低速度（current_speed < 25）で惰行をして停止位置へ進む動きは、遅延を増大させる動きであるためreward=0.0点としてください。<-【重要】
+- やや減点：-2m くelta_stop <0m 
+- 大幅減点（reward=0.0）：delta_stop < -2m（オーバーランリスクが高いため）
 
 --------------------------------------------------
 ## 駅停車完了フェーズ
-速度0km/hで停止済み状態。停止位置誤差を評価する。
+- 速度0km/hで停止済み状態。停止位置誤差を評価する。
+- ただし，CBTCの信号現示が0km/hであれば，駅手前であっても高評価とする。
 
 |dist_to_next_station| ≤ 1m
 → reward = 1.0
 
 |dist_to_next_station| > 10m
-→ reward = 0.0
+→ reward = 0.0（CBTCの信号現示が0km/hであれば，先行列車衝突回避としてreward = 1.0とする）
 
 1m〜10mの範囲は誤差に応じて段階的に減点する。
 
@@ -418,14 +554,15 @@ LLM独自の停止距離計算は禁止。
 --------------------------------------------------
 - CBTC停止限界距離は先行列車の50m手前である。
 - 先行列車が存在する場合はまずCBTC制御を優先して評価すること。
+- ブレーキをかけており駅の手前に停止する可能性があっても、それが先行列車接近に伴うCBTCによる信号現示の低下による減速であれば高く評価してください。
 
 ## 評価ルール
 - current_speed > signal_speed かつ ブレーキをかけていない
-  → 信号を無視しているとして大幅減点
-- current_speed ≒ signal_speed かつ ブレーキ中
-  → 高評価
+  → 信号を無視しているとして大幅減点（reward=0.0）
+- current_speed ≒ signal_speed （2つの速度の差が±2km/h程度）かつ ブレーキ中
+  → 高評価（たとえ，駅の手前に停止する可能性があっても信号現示に従っているとして高く評価してください）
 - current_speed < signal_speed
-  → 高評価
+  → 高評価（信号現示に従っている運転として高く評価してください）
 
 --------------------------------------------------
 # 先行列車解放時の特例
@@ -437,24 +574,32 @@ LLM独自の停止距離計算は禁止。
 # ノコギリ運転評価
 --------------------------------------------------
 以下をすべて満たした場合のみノコギリ運転として減点する。
+たとえその行動が定時到着のための加速や，減速に繋がっていたとしても乗り心地やエネルギー効率性に影響するとして減点してください。
 
 ## 条件1
-holding_time < 10秒
+holding_time < 7秒
 
 ## 条件2
-prev_notch_duration < 10秒
+prev_notch_duration < 7秒
 
-##条件3
+## 条件3
 以下のような反転操作
 - 力行→惰行
 - 惰行→力行
 - 力行→減速
 - 減速→力行
+- 減速→惰行
+- 惰行→減速
+
+## 条件4
+その反転に合理的理由が存在しない
 
 ## 評価ルール
-- 5秒未満 → 大きな減点
-- 5〜10秒 → 小さな減点
-- 10秒以上 → 減点なし
+下記はprev_notch_durationの値に応じた評価基準である。
+- 2秒未満：0.0点
+- 2～5秒 → 0.1～0.3点
+- 5～7秒 → 0.3～0.5点
+- 7秒以上 → 減点なし
 
 --------------------------------------------------
 # 即reward0.0ルール
@@ -467,20 +612,30 @@ prev_notch_duration < 10秒
 - オーバーランほぼ確実
 - 駅手前停止ほぼ確実
 - 駅停車誤差±10m超
+- 先行列車に衝突している場合（先行列車との接近距離が40mを切った場合）
+- 先行列車が在線して無いにも関わらず低速度（current_speed < 25）で惰行をする行為（詳しくは減速フェーズの評価ルールを参照）
 
 --------------------------------------------------
 # 出力ルール
 --------------------------------------------------
-Step1 制限速度確認
-Step2 CBTC確認
-Step3 停止位置達成可能性確認
-Step4 フェーズ評価
-Step5 ノコギリ運転評価
-Step6 先行列車と後続列車の運転間隔の適切性
-Step7 定時性・省エネ性評価
-Step8 総合評価
+以下のStep1〜Step9の順に、必ずすべてのStepを内部で確認すること。
+一つのStepの結論が後続のStepの前提になる場合は、その内容を踏まえて次のStepの判断を行うこと。
+いずれかのStepを省略・無視して評価してはならない。
 
-以上の順序で評価すること。
+Step1 即reward0.0ルール確認（上記「即reward0.0ルール」のいずれかに該当しないかを判断する）
+Step2 制限速度確認
+Step3 CBTC確認
+Step4 停止位置達成可能性確認
+Step5 フェーズ評価
+Step6 ノコギリ運転評価
+Step7 先行列車と後続列車の運転間隔の適切性
+Step8 定時性・省エネ性評価
+Step9 総合評価（Step1〜Step8を踏まえたrewardの最終判断。Step1で該当ありと判断した場合はrewardを必ず0.0とする）
+
+ただし出力においては、各Stepの推論過程を長文で書く必要はない。
+Step1〜Step8それぞれについて、"OK"（問題なし）／"NG"（問題あり。10文字程度の短い補足を括弧内に付けてよい）／"対象外"（評価対象外）
+のいずれかを"checks"に必ずすべて記録すること（省略不可）。
+そのうえで、reward低下・上昇の決め手となった理由のみを"reason"に一文（100～200文字程度）で簡潔にまとめること。
 """
 
         current_status = f"""
@@ -489,8 +644,10 @@ Step8 総合評価
 - **現在の運転操作**: {features['current_notch']} （継続時間: {features['holding_time']} 秒） <-- 【重要】この操作の適切性を評価してください。
 - **直前の運転操作**: {features['prev_notch']} （継続時間: {features['prev_notch_duration']} 秒） <-- 【重要】保持時間が共に5秒未満の場合、ノコギリ運転のルールを確認してください。
 - 速度情報: 制限速度 {features['speed_limit']} km/h (CBTC信号現示 {features['signal_speed']:.1f} km/h) に対し、現在 {features['current_speed']:.1f} km/h で走行中
+- 定時運行に必要な巡航速度（required_speed、算出済み。惰行への切替目安）: {features['required_speed']:.1f} km/h
 - 次駅への情報: 次駅までの残り距離 {features['dist_to_next_station']:.1f} m（マイナスは過走）に対し，定時到着まで残り {features['time_to_next_station']} 秒
 - 駅停車に必要なブレーキ距離: {features['req_stop_dist']:.2f} m
+- 停止余裕距離（delta_stop = dist_to_next_station - req_stop_dist、算出済み。ブレーキ開始判定に使用）: {features['delta_stop']:.2f} m
 - 運行状況: 計画ダイヤに対し {features['delay']} 秒の遅延
 - 現在の勾配: {features['current_gradient']} ‰
 - 前方の制限情報: {features['next_limit_info']}
@@ -500,15 +657,26 @@ Step8 総合評価
 """
         output_format = """
 # 出力指示
-reasonでは、Step1〜Step8の分析を踏まえ、現在の運転操作（current_notch）が適切であったかを簡潔に説明してください。
-説明は150〜200文字程度とし、rewardは0.0～1.0（0.1刻み）で出力すること。
+"checks"には、Step1〜Step8それぞれの判定（"OK"／"NG(補足)"／"対象外"）を必ずすべて記載すること（キーの省略不可）。
+"reason"には、Step1〜Step8の説明を並べるのではなく、rewardを決定づけた要因のみを100〜200文字程度の一文で簡潔に記述すること。
+rewardは0.0～1.0（0.1刻み）で出力し、"reason"の内容と整合させること。
+なお、"immediate_zero_rule"が"NG"の場合、rewardは必ず0.0とすること。
 
 {
-  "reason": "速度は制限内ですが、直前の加速から2.0秒で惰行に切り替えるノコギリ運転が発生しています。また定時到着に余裕があるにもかかわらず加速を続けていたため省エネ性に欠けます。安全性は保たれていますが快適性と効率性の観点から不適切です。",
-  "reward": 0.5
+  "checks": {
+    "immediate_zero_rule": "OK",
+    "speed_limit": "OK",
+    "cbtc": "OK",
+    "stop_position": "対象外",
+    "phase": "OK",
+    "sawtooth": "NG(2.0秒で反転)",
+    "train_interval": "対象外",
+    "punctuality_energy": "NG(必要以上の力行)"
+  },
+  "reason": "ノコギリ運転に該当し、かつ定時性に余裕があるため力行継続は省エネ性に欠けると判断し0.0とする。",
+  "reward": 0.0
 }
 """
-        return system_instruction + current_status + output_format
         return system_instruction + current_status + output_format
 
 
@@ -536,9 +704,9 @@ reasonでは、Step1〜Step8の分析を踏まえ、現在の運転操作（curr
             prompt = self.generate_weights_prompt(features)
             reason, w_surv, w_conf, w_comp = call_llm_for_weights(prompt)
             row = [
-                round(time, 1), tr.id, features["phase"], features["current_notch"], 
-                features["speed_limit"], round(features["current_speed"], 2), 
-                round(features["dist_to_next_station"], 1), 
+                round(time, 1), tr.id, features["phase"], features["current_notch"],
+                features["speed_limit"], round(features["current_speed"], 2),
+                round(features["dist_to_next_station"], 1),
                 features["time_to_next_station"],  # <--- 【修正】ここを追加！
                 features["delay"], 
                 features["current_gradient"], features["next_limit_info"], 
@@ -551,8 +719,8 @@ reasonでは、Step1〜Step8の分析を踏まえ、現在の運転操作（curr
                 features["time"], tr.id, features["phase"], features["current_notch"], 
                 features["holding_time"], 
                 features["prev_notch"], features["prev_notch_duration"],
-                features["speed_limit"], features["signal_speed"], features["current_speed"], 
-                features["dist_to_next_station"], 
+                features["speed_limit"], features["signal_speed"], features["current_speed"], features["required_speed"],
+                features["dist_to_next_station"],
                 features["time_to_next_station"],
                 features["req_stop_dist"],  
                 features["delay"], 

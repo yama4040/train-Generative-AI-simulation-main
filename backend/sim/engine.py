@@ -1767,9 +1767,13 @@ def run_simulation_iter(
                     else:
                         prev_status = getattr(tr, 'run_status', "STOPPED")
                         
-                        # 1. 駅停車の一発ブレーキ化（最優先：一度ブレーキをかけたら駅に止まるまで緩めない）
-                        if stop_at_node and stop_distance <= 500.0 and prev_status == "BRAKE":
-                            calc_status = "BRAKE"
+                        # ▼▼▼ 【修正2】駅・先行列車・信号すべてに「一発ブレーキ化」を適用 ▼▼▼
+                        if stop_distance <= 500.0 and prev_status == "BRAKE":
+                            # 先行列車が動き出して安全距離に10m以上の余裕ができた場合のみブレーキ解除を許可
+                            if stop_reason == "safety" and stop_distance > modified_req_stop_dist + 10.0:
+                                pass # 下の通常の加減速判定へ進む（解除）
+                            else:
+                                calc_status = "BRAKE" # 余裕ができるまでは確実にブレーキを保持
                             
                         # ▼▼▼ 【完全刷新】速度超過時の自動ブレーキと保持 ▼▼▼
                         elif tr.speed >= current_limit + 1.0:
